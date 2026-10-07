@@ -1,5 +1,5 @@
 """
-Painel de testes - versao web unica (acessivel por outros aparelhos na mesma rede Wi-Fi)
+Xitadasso - painel de testes com site local (acessivel por outros aparelhos na mesma Wi-Fi)
 Uso pessoal, apenas no seu proprio computador (Windows).
 
 Requisitos para rodar direto com Python: pip install flask
@@ -13,6 +13,7 @@ import ctypes
 import random
 import string
 import secrets
+import tempfile
 import threading
 import subprocess
 import webbrowser
@@ -29,7 +30,7 @@ def pasta_base():
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
-ARQ_CONFIG = os.path.join(pasta_base(), "painel_config.json")
+ARQ_CONFIG = os.path.join(pasta_base(), "xitadasso_config.json")
 
 
 def carregar_pin():
@@ -72,6 +73,14 @@ def ip_local():
         s.close()
 
 
+def log_seguro(*args):
+    # com --windowed o sys.stdout pode ser None; isso evita o programa fechar sozinho
+    try:
+        print(*args)
+    except Exception:
+        pass
+
+
 # ---------- pagina ----------
 
 PAGINA = """
@@ -79,7 +88,7 @@ PAGINA = """
 <html lang="pt-br">
 <head>
 <meta charset="utf-8">
-<title>Painel de Testes</title>
+<title>Xitadasso</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <style>
 :root{--bg:#0a0a0d;--panel:#101015;--line:#1d1d25;--fg:#e9e9f0;--mut:#8b8b99;--acc:#7c00f0;--acc2:#9a3cff;color-scheme:dark}
@@ -87,8 +96,10 @@ PAGINA = """
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
 .app{display:grid;grid-template-columns:190px 1fr;min-height:100vh}
 aside{background:var(--panel);border-right:1px solid var(--line);padding:16px 12px;display:flex;flex-direction:column;gap:6px}
-.logo{padding:2px 4px 16px;font-weight:800;font-size:20px;letter-spacing:1px}
-.logo span{color:var(--acc2)}
+.logo{padding:2px 4px 16px;font-weight:800;font-size:20px;letter-spacing:1px;display:flex;align-items:center;gap:6px}
+.logo .x{color:#fff}
+.logo .d{color:var(--acc2)}
+.logo svg{width:20px;height:20px;stroke:var(--acc2);flex:none}
 aside h6{margin:10px 0 2px 4px;font-size:12px;color:var(--mut);font-weight:600}
 .nav{border:0;background:none;color:var(--fg);text-align:left;padding:9px 12px;border-radius:8px;font:inherit;cursor:pointer}
 .nav.on{background:var(--acc);font-weight:600}
@@ -123,7 +134,12 @@ input[type=text],input[type=password],input[type=number]{background:#1a1a20;colo
 <body>
 <div class="app">
   <aside>
-    <div class="logo">PAINEL<span>_</span></div>
+    <div class="logo"><span class="x">XITA</span><span class="d">DASSO</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="16" cy="4.5" r="1.8" fill="var(--acc2)" stroke="none"/>
+        <path d="M13.5 8l-1.8 4.3 3 1.8-1 6.4M10 12.8l-3.5 2M13.5 8l2.6 2.6 3.4-1"/>
+      </svg>
+    </div>
     <h6>Controle</h6>
     <button class="nav on" data-p="a">Comandos</button>
     <button class="nav" data-p="b">Terminal</button>
@@ -145,6 +161,14 @@ input[type=text],input[type=password],input[type=number]{background:#1a1a20;colo
           <button class="btn" onclick="abrirAbas()">Abrir abas</button>
           <button class="btn" onclick="rodar('monitor_off')">Desligar monitor</button>
         </div>
+      </div>
+      <div class="card">
+        <h3>Efeitos para mostrar aos amigos</h3>
+        <div class="grid-btns">
+          <button class="btn" onclick="rodar('digitar_notepad')">Digitar sozinho</button>
+          <button class="btn" onclick="rodar('capslock_blink')">Piscar Caps Lock</button>
+        </div>
+        <button class="btn outline block" onclick="efeitoTelaAzul()">Tela azul (brincadeira)</button>
       </div>
       <div class="card">
         <h3>Energia</h3>
@@ -195,7 +219,7 @@ input[type=text],input[type=password],input[type=number]{background:#1a1a20;colo
 
 <div class="lock hid" id="lockScreen">
   <div class="lockbox">
-    <div class="logo" style="justify-content:center;display:flex">PAINEL<span>_</span></div>
+    <div class="logo" style="justify-content:center"><span class="x">XITA</span><span class="d">DASSO</span></div>
     <p class="hint">Este painel esta protegido por PIN.</p>
     <input type="password" id="lockPin" placeholder="PIN">
     <button class="btn block" onclick="entrarPin()">Entrar</button>
@@ -211,6 +235,7 @@ const consoleDiv=$("#term");
 function log(txt){consoleDiv.textContent+=txt+"\\n";consoleDiv.scrollTop=consoleDiv.scrollHeight}
 
 async function rodar(acao,dados){
+  show('b');
   log("> executando: "+acao);
   const r=await fetch('/api/'+acao,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(dados||{})});
   if(r.status===401){mostrarLock();return}
@@ -222,6 +247,10 @@ function abrirAbas(){
   const links=prompt("Cole os links separados por espaco:","https://www.google.com https://www.wikipedia.org");
   if(links===null)return;
   rodar('abrir_abas',{links:links});
+}
+
+function efeitoTelaAzul(){
+  window.open('/bsod','_blank');
 }
 
 let acaoModal=null;
@@ -273,10 +302,39 @@ carregarEstado();
 </html>
 """
 
+PAGINA_BSOD = """
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<title> </title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body{background:#0078d7;color:#fff;font-family:'Segoe UI',Arial,sans-serif;height:100vh;margin:0;
+display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center;cursor:pointer}
+h1{font-size:100px;margin:0 0 20px}
+p{font-size:20px;max-width:650px;line-height:1.6;padding:0 20px}
+small{position:fixed;bottom:16px;opacity:.75;font-size:12px}
+</style>
+</head>
+<body onclick="window.close()">
+  <h1>:(</h1>
+  <p>Seu PC encontrou um problema e precisa ser reiniciado. Estamos apenas coletando algumas
+  informacoes de erro e depois reiniciaremos para voce.</p>
+  <small>Toque na tela para fechar - e so uma brincadeira, nada foi afetado</small>
+</body>
+</html>
+"""
+
 
 @app.route("/")
 def home():
     return PAGINA
+
+
+@app.route("/bsod")
+def bsod():
+    return PAGINA_BSOD
 
 
 @app.route("/api/state")
@@ -396,6 +454,80 @@ def api_shell():
         return jsonify(erro="comando demorou demais e foi cancelado")
 
 
+# ---------- efeitos de brincadeira ----------
+
+ESPECIAIS_SENDKEYS = {
+    "+": "{+}", "^": "{^}", "%": "{%}", "~": "{~}",
+    "(": "{(}", ")": "{)}", "{": "{{}", "}": "{}}",
+    "[": "{[}", "]": "{]}",
+}
+
+
+def gerar_script_notepad():
+    linhas = [
+        "> iniciando sequencia de acesso...",
+        "[+] escaneando rede local...",
+        "[+] contornando firewall...",
+        "[+] acesso concedido!",
+        "",
+        "(e so uma brincadeira - nada foi hackeado de verdade)",
+    ]
+    comandos = [
+        "Add-Type -AssemblyName System.Windows.Forms",
+        "Start-Sleep -Milliseconds 700",
+    ]
+    for linha in linhas:
+        for ch in linha:
+            seguro = ESPECIAIS_SENDKEYS.get(ch, ch).replace("'", "''")
+            comandos.append(f"[System.Windows.Forms.SendKeys]::SendWait('{seguro}')")
+            comandos.append("Start-Sleep -Milliseconds 35")
+        comandos.append("[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')")
+        comandos.append("Start-Sleep -Milliseconds 150")
+    return "\n".join(comandos)
+
+
+@app.route("/api/digitar_notepad", methods=["POST"])
+def api_digitar_notepad():
+    bloqueio = exigir_auth()
+    if bloqueio:
+        return bloqueio
+
+    def worker():
+        try:
+            subprocess.Popen(["notepad.exe"])
+            time.sleep(1)
+            script = gerar_script_notepad()
+            caminho = os.path.join(tempfile.gettempdir(), "xitadasso_efeito.ps1")
+            with open(caminho, "w", encoding="utf-8") as f:
+                f.write(script)
+            subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", caminho],
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+        except Exception as e:
+            log_seguro("erro no efeito notepad:", e)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify(saida="Abrindo o Bloco de Notas e digitando sozinho...")
+
+
+@app.route("/api/capslock_blink", methods=["POST"])
+def api_capslock_blink():
+    bloqueio = exigir_auth()
+    if bloqueio:
+        return bloqueio
+
+    def worker():
+        user32 = ctypes.windll.user32
+        for _ in range(10):
+            user32.keybd_event(0x14, 0, 0, 0)
+            user32.keybd_event(0x14, 0, 2, 0)
+            time.sleep(0.25)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify(saida="Caps Lock piscando por uns segundos...")
+
+
 def abrir_navegador():
     time.sleep(1)
     webbrowser.open("http://127.0.0.1:5000")
@@ -403,10 +535,10 @@ def abrir_navegador():
 
 if __name__ == "__main__":
     if os.name != "nt":
-        print("Feito para Windows.")
+        log_seguro("Feito para Windows.")
         sys.exit(1)
-    print(f"Painel disponivel neste PC em:        http://127.0.0.1:5000")
-    print(f"Painel disponivel para outros aparelhos na mesma rede Wi-Fi em: http://{ip_local()}:5000")
+    log_seguro("Xitadasso disponivel neste PC em:", "http://127.0.0.1:5000")
+    log_seguro("Xitadasso disponivel para outros aparelhos na mesma Wi-Fi em:", f"http://{ip_local()}:5000")
     threading.Thread(target=abrir_navegador, daemon=True).start()
     # host 0.0.0.0 = acessivel por outros aparelhos na mesma rede (use PIN no painel!)
     app.run(host="0.0.0.0", port=5000, debug=False)
