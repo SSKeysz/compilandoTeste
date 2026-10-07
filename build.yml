@@ -1,0 +1,41 @@
+name: Build EXE
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Baixar o codigo
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller flask
+
+      - name: Compilar painel de terminal (hacker_tool.exe)
+        run: pyinstaller --onefile --name hacker_tool hacker_tool.py
+
+      - name: Compilar painel web (app.exe)
+        run: pyinstaller --onefile --name app app.py
+
+      - name: Enviar hacker_tool.exe como artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: hacker_tool-exe
+          path: dist/hacker_tool.exe
+
+      - name: Enviar app.exe como artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-exe
+          path: dist/app.exe
