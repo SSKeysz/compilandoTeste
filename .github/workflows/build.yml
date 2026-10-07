@@ -22,20 +22,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller flask
 
-      - name: Compilar painel de terminal (hacker_tool.exe)
-        run: pyinstaller --onefile --name hacker_tool hacker_tool.py
+      - name: Compilar painel.exe
+        run: pyinstaller --onefile --name painel painel.py
 
-      - name: Compilar painel web (app.exe)
-        run: pyinstaller --onefile --name app app.py
-
-      - name: Enviar hacker_tool.exe como artefato
+      - name: Enviar painel.exe como artefato
         uses: actions/upload-artifact@v4
         with:
-          name: hacker_tool-exe
-          path: dist/hacker_tool.exe
-
-      - name: Enviar app.exe como artefato
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-exe
-          path: dist/app.exe
+          name: painel-exe
+          path: dist/painel.exe
