@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch: {}
 
+env:
+  NOME_EXE: menu   # nome do exe gerado (menu.exe). Troque aqui se quiser outro.
+
 jobs:
   build:
     runs-on: windows-latest
@@ -22,11 +25,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller flask
 
-      - name: Compilar chrome.exe
-        run: pyinstaller --onefile --name painel painel.py
+      - name: Checar se o codigo compila
+        run: python -m py_compile painel.py
 
-      - name: Enviar painel.exe como artefato
+      - name: Compilar exe (sem janela de CMD)
+        run: pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE painel.py
+
+      - name: Enviar exe como artefato
         uses: actions/upload-artifact@v4
         with:
-          name: painel-exe
-          path: dist/painel.exe
+          name: ${{ env.NOME_EXE }}-exe
+          path: dist/${{ env.NOME_EXE }}.exe
