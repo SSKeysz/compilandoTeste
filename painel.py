@@ -321,11 +321,21 @@ function abrirAbas(){
 const pausa=ms=>new Promise(r=>setTimeout(r,ms));
 async function bypass(){
   show('b');
-  const passos=["[*] BYPASS iniciado...","[+] Rastreando invasor... 192.168.0.666","[+] Revertendo payload...","[+] Expulsando o hacker...","[OK] Sistema protegido. Encerrando o Xitadasso..."];
-  for(const p of passos){log(p);await pausa(800)}
+  const passos=["[*] BYPASS iniciado...","[+] Rastreando invasor... 192.168.0.666","[+] Revertendo payload...","[+] Expulsando o hacker..."];
+  for(const p of passos){log(p);await pausa(700)}
   const r=await fetch('/api/bypass',{method:'POST'}).catch(()=>null);
-  if(r&&r.status===401){mostrarLock();return}
-  document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;text-align:center;color:#8b8b99;font:16px system-ui">Conexao encerrada.<br>Xitadasso desligado.</div>';
+  if(r&&r.status===401){log("[ERRO] sessao expirada - o programa NAO fechou. Entre com o PIN e tente de novo.");mostrarLock();return}
+  if(!r){log("[ERRO] nao consegui falar com o programa. Tente de novo.");return}
+  log("[OK] Encerrando o Xitadasso...");
+  for(let i=0;i<20;i++){
+    await pausa(400);
+    try{await fetch('/api/state',{cache:'no-store'})}
+    catch(e){
+      document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;text-align:center;color:#8b8b99;font:16px system-ui">Conexao encerrada.<br>Xitadasso desligado.<br><small style="margin-top:8px;display:block">(agora e so apagar o arquivo)</small></div>';
+      return;
+    }
+  }
+  log("[AVISO] o programa ainda nao fechou depois de 8s. Confira o Gerenciador de Tarefas no PC.");
 }
 
 let acaoModal=null;
@@ -908,7 +918,7 @@ def api_bypass():
         return bloqueio
 
     def sair():
-        time.sleep(3)
+        time.sleep(0.4)  # so o suficiente pra resposta HTTP sair antes do processo morrer
         fechar_efeito()
         os._exit(0)
 
