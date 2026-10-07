@@ -255,6 +255,7 @@ input[type=text],input[type=password],input[type=number]{background:#1a1a20;colo
         <div class="cmdrow">
           <input id="cmdInput" type="text" placeholder="Comando do Windows..." onkeydown="if(event.key==='Enter')rodarComando()">
           <button class="btn" onclick="rodarComando()">Executar</button>
+          <button class="btn outline" id="btnCancelar" onclick="cancelarComando()" disabled>Cancelar</button>
         </div>
       </div>
     </div>
@@ -336,11 +337,32 @@ function abrirModal(acao){
 function fecharModal(){$("#modalBg").style.display='none'}
 function confirmarAcao(){const seg=$("#segundos").value||30;fecharModal();rodar(acaoModal,{segundos:seg})}
 
-function rodarComando(){
+let comandoAtivo=null;
+async function rodarComando(){
   const input=$("#cmdInput"),cmd=input.value.trim();
-  if(!cmd)return;
+  if(!cmd||comandoAtivo)return;
   input.value='';
-  rodar('shell',{comando:cmd});
+  show('b');
+  log("> executando: "+cmd);
+  comandoAtivo=crypto.randomUUID?crypto.randomUUID():String(Date.now());
+  $("#btnCancelar").disabled=false;
+  const id=comandoAtivo;
+  const r=await fetch('/api/shell',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({comando:cmd,id:id})});
+  if(comandoAtivo!==id)return; // foi cancelado, ignora resposta atrasada
+  comandoAtivo=null;
+  $("#btnCancelar").disabled=true;
+  if(r.status===401){mostrarLock();return}
+  const j=await r.json();
+  log(j.saida||j.erro||"ok");
+}
+async function cancelarComando(){
+  if(!comandoAtivo)return;
+  const id=comandoAtivo;
+  comandoAtivo=null;
+  $("#btnCancelar").disabled=true;
+  log("> cancelando...");
+  await fetch('/api/shell_cancelar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});
+  log("comando cancelado.");
 }
 
 async function definirPin(){
@@ -601,22 +623,63 @@ def api_cancelar():
     return jsonify(saida="Desligamento/reinicio cancelado (se havia algum agendado).")
 
 
+COMANDOS_RODANDO = {}  # id -> Popen
+
+
 @app.route("/api/shell", methods=["POST"])
 def api_shell():
     bloqueio = exigir_auth()
     if bloqueio:
         return bloqueio
-    cmd = request.get_json(force=True).get("comando", "")
+    dados = request.get_json(force=True)
+    cmd = dados.get("comando", "")
+    cmd_id = dados.get("id")
     if not cmd:
         return jsonify(erro="comando vazio")
     try:
-        resultado = executar(cmd, shell=True, capture_output=True, text=True,
-                             encoding="cp850" if os.name == "nt" else None,
-                             errors="replace", timeout=20)
-        saida = (resultado.stdout or "") + (resultado.stderr or "")
+        proc = subprocess.Popen(
+            cmd, shell=True, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            encoding="cp850" if os.name == "nt" else None, errors="replace",
+            creationflags=CREATE_NO_WINDOW,
+        )
+        if cmd_id:
+            COMANDOS_RODANDO[cmd_id] = proc
+        try:
+            stdout, stderr = proc.communicate(timeout=60)
+        finally:
+            if cmd_id:
+                COMANDOS_RODANDO.pop(cmd_id, None)
+        if proc.returncode == -9 or proc.returncode == 1 and stdout is None:
+            pass
+        saida = (stdout or "") + (stderr or "")
+        if proc.returncode is not None and proc.returncode < 0:
+            return jsonify(saida="(comando cancelado)")
         return jsonify(saida=saida.strip() or "(sem saida)")
     except subprocess.TimeoutExpired:
+        proc.kill()
+        if cmd_id:
+            COMANDOS_RODANDO.pop(cmd_id, None)
         return jsonify(erro="comando demorou demais e foi cancelado")
+
+
+@app.route("/api/shell_cancelar", methods=["POST"])
+def api_shell_cancelar():
+    bloqueio = exigir_auth()
+    if bloqueio:
+        return bloqueio
+    cmd_id = request.get_json(force=True).get("id")
+    proc = COMANDOS_RODANDO.get(cmd_id)
+    if not proc:
+        return jsonify(saida="nada para cancelar")
+    try:
+        executar(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    return jsonify(saida="cancelado")
 
 
 # ---------- efeitos de brincadeira ----------
