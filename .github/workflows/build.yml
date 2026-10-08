@@ -6,7 +6,7 @@ on:
   workflow_dispatch: {}
 
 env:
-  NOME_EXE: remotedesk   # nome do exe gerado (menu.exe). Troque aqui se quiser outro.
+  NOME_EXE: remotecontrol   # nome do exe gerado (menu.exe). Troque aqui se quiser outro.
 
 jobs:
   build:
@@ -23,7 +23,7 @@ jobs:
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller flask pillow
+          pip install pyinstaller flask pillow mss
 
       - name: Checar se o codigo compila
         run: python -m py_compile painel.py
