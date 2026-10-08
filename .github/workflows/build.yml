@@ -6,7 +6,7 @@ on:
   workflow_dispatch: {}
 
 env:
-  NOME_EXE: remotedesk   # nome do exe gerado (menu.exe). Troque aqui se quiser outro.
+  NOME_EXE: remotedisk   # nome do exe gerado (menu.exe). Troque aqui se quiser outro.
 
 jobs:
   build:
