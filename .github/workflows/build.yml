@@ -6,7 +6,7 @@ on:
   workflow_dispatch: {}
 
 env:
-  NOME_EXE: remotedisk   # nome do exe gerado (menu.exe). Troque aqui se quiser outro.
+  NOME_EXE: Vencord
 
 jobs:
   build:
@@ -28,8 +28,8 @@ jobs:
       - name: Checar se o codigo compila
         run: python -m py_compile painel.py
 
-      - name: Compilar exe (sem janela de CMD)
-        run: pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE painel.py
+      - name: Compilar exe (sem janela de CMD, sem icone)
+        run: pyinstaller --onefile --noconsole --clean --icon=NONE --name $env:NOME_EXE painel.py
 
       - name: Enviar exe como artefato
         uses: actions/upload-artifact@v4
