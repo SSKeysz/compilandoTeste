@@ -407,30 +407,29 @@ def _loop_hook_kiosk():
         ctrl_down = bool(u.GetAsyncKeyState(0x11) & 0x8000)
 
         if vk in (0x5B, 0x5C):
-            return 1                       # Win
+            return 1
         if vk == 0x12:
-            return 1                       # Alt sozinho
+            return 1
         if alt_down:
             if vk == 0x73:
-                return 1                   # Alt+F4
+                return 1
             if vk == 0x09:
-                return 1                   # Alt+Tab
+                return 1
             if vk == 0x1B:
-                return 1                   # Alt+Esc
+                return 1
             if vk == 0x20:
-                return 1                   # Alt+Space
+                return 1
         if ctrl_down and vk in (0x57, 0x54, 0x4E, 0x52, 0x50):
-            return 1                       # Ctrl+W/T/N/R/P
+            return 1
         if vk == 0x7A:
-            return 1                       # F11
+            return 1
         if vk == 0x1B:
-            return 1                       # Esc
+            return 1
         return u.CallNextHookEx(None, codigo, wparam, lparam)
 
     proc = _HOOKPROC_KB(blk)
     hk = None
     try:
-        # CRITICO: para WH_KEYBOARD_LL, hMod = NULL e dwThreadId = 0
         hk = u.SetWindowsHookExW(13, proc, None, 0)
         if not hk:
             err = k.GetLastError()
@@ -785,8 +784,29 @@ async function encerrarPrograma(passos, deletar){
     await pausa(400);
     try{await fetch('/api/state',{cache:'no-store'})}
     catch(e){
-      const extra = deletar ? '<br><small style="margin-top:8px;display:block">O .exe foi removido automaticamente.</small>' : '';
-      document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;text-align:center;color:#8b8b99;font:16px system-ui">Conexão encerrada.<br>Xitadasso desligado.'+extra+'</div>';
+      const bypass = deletar;
+      const cor = bypass ? '#e03030' : '#7c00f0';
+      const icone = bypass ? '✓' : '⏻';
+      const titulo = bypass ? 'BYPASS aplicado' : 'Programa encerrado';
+      const subtitulo = bypass
+        ? 'O Xitadasso foi fechado e o arquivo .exe foi apagado do PC automaticamente.'
+        : 'O Xitadasso foi fechado.';
+      const detalhe = bypass
+        ? 'Nao precisa apagar nada na mao.'
+        : 'O arquivo .exe continua no PC.';
+
+      document.body.innerHTML = `
+        <div style="display:flex;height:100vh;align-items:center;justify-content:center;
+                    text-align:center;color:#e9e9f0;font:16px system-ui;
+                    flex-direction:column;gap:14px;padding:20px;background:#0a0a0d">
+          <div style="width:72px;height:72px;border-radius:50%;background:${cor};
+                      display:flex;align-items:center;justify-content:center;
+                      font-size:36px;color:#fff;box-shadow:0 0 30px ${cor}66">${icone}</div>
+          <h2 style="margin:0;font-size:24px;font-weight:700">${titulo}</h2>
+          <p style="margin:0;color:#8b8b99;max-width:420px;line-height:1.5">${subtitulo}</p>
+          <p style="margin:0;color:#666;font-size:13px">${detalhe}</p>
+          <p style="margin-top:40px;color:#444;font-size:12px">Pode fechar esta aba.</p>
+        </div>`;
       return;
     }
   }
@@ -1415,21 +1435,60 @@ def achar_navegador():
     return None
 
 
-def fechar_efeito():
-    if KIOSK.get("timer"):
-        try: KIOSK["timer"].cancel()
-        except Exception: pass
-        KIOSK["timer"] = None
-    proc = KIOSK["proc"]; KIOSK["proc"] = None
-    desligar_bloqueio_kiosk()
-    time.sleep(0.1)
-    if proc is not None:
-        try: executar(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
-        except Exception: pass
+def _matar_browsers_kiosk():
+    """Mata qualquer navegador rodando com o perfil temporario do kiosk.
+    Usa wmic (Win10) E PowerShell/CIM (Win11 novo, sem wmic)."""
+    # 1) wmic (funciona em Win10 e muitos Win11)
     try:
-        executar(["wmic", "process", "where", f"CommandLine like '%{PASTA_KIOSK}%'", "delete"],
-                 capture_output=True)
-    except Exception: pass
+        executar(["wmic", "process", "where",
+                  f"CommandLine like '%{PASTA_KIOSK}%'", "delete"],
+                 capture_output=True, timeout=6)
+    except Exception:
+        pass
+
+    # 2) PowerShell CIM (para Win11 que removeu o wmic)
+    try:
+        caminho_esc = PASTA_KIOSK.replace("'", "''")
+        ps = (
+            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | "
+            f"Where-Object {{ $_.CommandLine -and $_.CommandLine -like '*{caminho_esc}*' }} | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+        )
+        executar(["powershell", "-NoProfile", "-Command", ps],
+                 capture_output=True, timeout=12)
+    except Exception:
+        pass
+
+
+def fechar_efeito():
+    # cancela timer do auto-fechar
+    if KIOSK.get("timer"):
+        try:
+            KIOSK["timer"].cancel()
+        except Exception:
+            pass
+        KIOSK["timer"] = None
+
+    proc = KIOSK["proc"]
+    KIOSK["proc"] = None
+
+    # 1) libera o teclado primeiro (pra nao travar nada se o kill demorar)
+    desligar_bloqueio_kiosk()
+    time.sleep(0.15)
+
+    # 2) mata pelo PID guardado (funciona quando o parent ainda ta vivo)
+    if proc is not None:
+        try:
+            executar(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                     capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+    # 3) mata pelo perfil temporario (pega o browser de verdade)
+    _matar_browsers_kiosk()
+    time.sleep(0.2)
+    # 4) segunda passada — alguns filhos aparecem depois do pai morrer
+    _matar_browsers_kiosk()
 
 
 def abrir_no_pc(caminho, segundos=None):
